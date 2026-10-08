@@ -1,10 +1,10 @@
-# GoalSync
+# Wagerly
 
 An AI-powered goal planning and social accountability application.
 
 ## Overview
 
-GoalSync helps users turn larger goals into manageable tasks while staying accountable through friends or accountability partners. Users can create goals, set deadlines, receive AI-generated plans, track progress, and create accountability pacts with virtual stakes or custom consequences.
+Wagerly helps users turn larger goals into manageable tasks while staying accountable through friends or accountability partners. Users can create goals, set deadlines, receive AI-generated plans, track progress, and create accountability pacts with virtual stakes or custom consequences.
 
 ## Technologies
 
