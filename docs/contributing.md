@@ -3,11 +3,7 @@
 ## Before starting
 
 - Check the current repository state and existing documentation.
-- Read [the architecture overview](./architecture.md) and confirm pending
-  technology or product decisions with the team before making them part of the
-  implementation.
-- Keep changes within the requested scope. Do not add UI, backend behavior, or
-  external integrations without an agreed task.
+- Read [the architecture overview](./architecture.md) and [the API contract](./api.md).
 
 ## Branches and pull requests
 
@@ -22,17 +18,12 @@
 
 ## Where work belongs
 
-Place future client code under `frontend/` and server/domain logic and
-integrations under `backend/`. Add tests under `tests/`. Keep architecture and
-collaboration guidance in `docs/`.
-
-These are starting boundaries, not permission to implement the planned
-features. Update the architecture documentation when the team approves a
-meaningful change in direction.
+Keep API behavior in the existing Express backend and update the API contract
+when request or response shapes change. The frontend is still a placeholder
+and should not be described as integrated until tested end to end.
 
 ## Validation
 
-This scaffold has no configured build, lint, or test commands. For
-documentation-only changes, check the rendered Markdown and `git status`.
-Document the exact checks performed in each pull request. Add tooling when
-working application code establishes a concrete need.
+Run `npm test` for the Node built-in test suite. Live Supabase and Gemini
+integration checks require team-provided local credentials and are not part of
+the automated suite. Document the exact checks performed in each pull request.

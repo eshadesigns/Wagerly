@@ -2,74 +2,59 @@
 
 ## Current implementation
 
-The repository contains documentation and comment-only JavaScript placeholders
-under `frontend/`, `backend/`, and `tests/`. There is no UI, server behavior,
-application logic, persistence layer, AI integration, or configured test suite.
-The technologies and flows below describe proposals, not existing behavior.
+Sprint 1 provides a Node.js/Express JSON backend in `backend/src/`. It uses
+Supabase Auth and Postgres, validates bearer access tokens, and performs
+database calls with those user tokens so row-level security applies. Gemini
+task generation uses the official `@google/genai` SDK on the server. The
+Supabase schema and RLS policies are in
+`supabase/migrations/20261026000000_sprint1_backend.sql`.
 
-## Proposed separation of responsibilities
+The frontend is still only comment-only JavaScript placeholders; React and
+frontend build tooling have not been implemented. There are no forms or API
+calls to integrate yet. API paths and JSON shapes are defined in
+[`api.md`](./api.md).
 
-- **Frontend (`frontend/`):** A future client application will handle
-  user-facing workflows. React is proposed, but framework and build tooling
-  have not been approved. Visual design is intentionally out of scope.
-- **Backend (`backend/`):** Future server-side application services and API
-  routes will coordinate requests, enforce application rules, and protect
-  credentials that must not be exposed to a browser.
-- **Persistence and authentication:** Supabase is proposed for authentication
-  and persistent data. Its use, data model, and security policies remain
-  undecided.
-- **AI integration:** Gemini is proposed for producing suggested task plans.
-  The integration should be server-side if it uses a secret API key. Provider,
-  prompt behavior, error handling, and plan format require agreement before
-  implementation.
+## Separation of responsibilities
 
-JavaScript is the intended primary application language. The `.env.example`
-variable names are provisional; confirm whether the `VITE_` names are
-appropriate before introducing a client build. Never expose a Gemini secret in
-client-side code.
+- **Frontend (`frontend/`):** Future UI; currently no framework, forms, or
+  browser API integration is implemented.
+- **Backend (`backend/`):** Express API for authentication, goals, and task
+  generation.
+- **Persistence and authentication:** Supabase Auth and Postgres. RLS policies
+  restrict goal and task access to the owning user.
+- **AI integration:** Gemini generates a validated 3-7 task JSON plan on the
+  backend. `GEMINI_API_KEY` must never be exposed to a browser.
 
 ## Directory responsibilities
 
-- `frontend/src/main.js`: future React application entry point.
-- `frontend/src/api.js`: future frontend-to-backend communication.
-- `backend/src/index.js`: future server startup and composition.
-- `backend/src/goals.js`, `tasks.js`, `pacts.js`, and `accountability.js`:
-  future domain logic for those areas.
-- `backend/src/ai.js` and `database.js`: future AI and persistence integrations,
-  if approved.
-- `tests/`: tests for implemented application logic.
+- `frontend/src/main.js` and `frontend/src/api.js`: placeholders; no frontend
+  behavior or API calls yet.
+- `backend/src/index.js`: Express server startup, routes, authentication
+  middleware, CORS, and generation rate limit.
+- `backend/src/auth.js`, `goals.js`, and `tasks.js`: auth and goal/task logic.
+- `backend/src/ai.js` and `database.js`: Gemini and Supabase integrations.
+- `supabase/migrations/`: database schema, RLS, and atomic task insertion.
+- `tests/`: Node's built-in test runner for API contracts using mocked
+  Supabase/Gemini services.
 
-These files are placeholders only; they do not define APIs or behavior.
+## Sprint 1 flow
 
-## Expected high-level flow
+1. A user registers, confirms their email if required by Supabase, and logs in.
+2. The user creates a personal goal with a deadline.
+3. The backend generates and saves one ordered task plan for that goal.
+4. The user retrieves their goals and saved tasks.
 
-1. A user creates an account and logs in.
-2. The user creates a goal and sets a deadline.
-3. An AI service proposes a task plan for the user to review.
-4. The user invites an accountability partner and establishes a pact.
-5. The user marks tasks complete; the partner reviews and approves or rejects
-   completion.
-6. Progress is presented to the user. Goal outcomes and history are planned for
-   a later release.
+The API contract for this flow is in [`api.md`](./api.md). Partner invitations,
+pacts, task completion/verification, progress reporting, and plan editing are
+later-release work.
 
-This is product direction, not a defined API or data contract. The plan-editing
-step is a later-release capability.
+## Remaining work
 
-## Decisions still pending
-
-- Confirm frontend framework and build tooling, and decide where any frontend
-  code belongs without adding visual implementation before design direction is
-  approved.
-- Confirm how Node.js services and API routes will be hosted and organized.
-- Confirm Supabase adoption, authentication approach, data model, and database
-  security policies.
-- Confirm Gemini adoption, server-side integration details, and expected plan
-  behavior.
-- Define partner roles, invitation lifecycle, permissions, and the task
-  verification and dispute/rejection flow.
-- Agree on pact rules and consequence handling. Stakes and consequences are
-  accountability mechanisms only; the product does not require financial
-  transactions.
-- Define progress semantics and data retention for the dashboard and later
-  goal history.
-- Confirm environment variable names and ownership before adding integrations.
+- Implement the frontend framework/forms and connect them to the published
+  contract in [`api.md`](./api.md); actual frontend integration is unverified.
+- Configure the team's Supabase project, email confirmation template, allowed
+  local redirect URL, and apply the SQL migration.
+- Supply a Gemini API key and choose an available model in `GEMINI_MODEL` for
+  live generation. AI behavior is covered by mocked tests only.
+- Partners, pacts, task completion, verification, dashboards, and payments
+  remain out of scope.
