@@ -1,7 +1,7 @@
 # Sprint 1 API
 
 The backend is a JSON API at `http://localhost:3000`. All endpoints except
-`GET /health`, registration, login, and email verification require
+`GET /health`, registration, login, email verification, and refresh require
 `Authorization: Bearer <access_token>`. The access token is the Supabase
 `session.access_token`; the API validates it with Supabase for every protected
 request and uses that same token for database queries so RLS applies.
@@ -14,6 +14,7 @@ request and uses that same token for database queries so RLS applies.
 | `POST` | `/api/auth/register` | Register with email and password |
 | `POST` | `/api/auth/verify-email` | Exchange a Supabase confirmation token hash for a session |
 | `POST` | `/api/auth/login` | Sign in with email and password |
+| `POST` | `/api/auth/refresh` | Exchange a one-time Supabase refresh token for a renewed session |
 | `GET` | `/api/goals` | List the signed-in user's goals |
 | `POST` | `/api/goals` | Create a goal |
 | `GET` | `/api/goals/:goalId` | Retrieve one owned goal |
@@ -48,6 +49,29 @@ token or secret in a confirmation URL.
 `POST /api/auth/login` takes the same email/password JSON and returns
 `{ "user", "session" }`. Unconfirmed accounts receive
 `403 EMAIL_NOT_CONFIRMED`; incorrect credentials receive `401`.
+
+`POST /api/auth/refresh` takes:
+
+```json
+{ "refreshToken": "<session.refresh_token>" }
+```
+
+It returns `{ "user", "session" }` with the renewed access and refresh tokens.
+Supabase refresh tokens are single-use: replace **both** saved tokens with the
+returned session, and do not retry an already-used token. Missing or malformed
+input returns `400 VALIDATION_ERROR`; invalid, expired, or reused tokens return
+`401 INVALID_REFRESH_TOKEN`. The future frontend should call this endpoint when
+an access token expires, update its session from the response, and require a
+new login if refresh fails. Keep these tokens out of URLs and logs.
+
+Registration, login, email verification, and refresh are rate limited by
+client IP. Defaults are 5 registrations, 10 logins, 10 verification requests,
+and 10 refreshes per 15 minutes. Configure them with
+`AUTH_REGISTER_RATE_LIMIT`, `AUTH_LOGIN_RATE_LIMIT`,
+`AUTH_VERIFY_EMAIL_RATE_LIMIT`, `AUTH_REFRESH_RATE_LIMIT`, and
+`AUTH_RATE_LIMIT_WINDOW_MS`. Limits are process-local; use shared rate-limit
+storage when deploying multiple backend instances. A rejected request returns
+`429 { "error": { "code": "AUTH_RATE_LIMITED", "message": "..." } }`.
 
 ### Goals
 
@@ -96,12 +120,14 @@ All errors use `{ "error": { "code": "...", "message": "..." } }`.
 
 1. `POST /api/auth/register` with an email and password. If confirmation is
    enabled, confirm using the email link and call `/api/auth/verify-email`
-   with its `token_hash`; use the returned `session.access_token`.
-2. `POST /api/auth/login` and copy `session.access_token`.
-3. `POST /api/goals` with the goal JSON above and the bearer token; copy
+   with its `token_hash`.
+2. `POST /api/auth/login` and save both returned session tokens.
+3. If the access token expires, call `POST /api/auth/refresh` with the saved
+   `refreshToken`, then replace both tokens with the returned session.
+4. `POST /api/goals` with the goal JSON above and the bearer token; copy
    `goal.id`.
-4. `POST /api/goals/{goalId}/tasks/generate` with the same bearer token.
-5. `GET /api/goals/{goalId}/tasks` with the same bearer token.
+5. `POST /api/goals/{goalId}/tasks/generate` with the same bearer token.
+6. `GET /api/goals/{goalId}/tasks` with the same bearer token.
 
 Example request headers for steps 3-5:
 
@@ -110,6 +136,34 @@ Authorization: Bearer <session.access_token>
 Content-Type: application/json
 ```
 
-This sequence is an API example, not a claim that frontend integration has
-been tested. There is no running frontend or form contract in this repository
-yet.
+Import [`Wagerly-Sprint-1.postman_collection.json`](./Wagerly-Sprint-1.postman_collection.json)
+for the request sequence. Set `baseUrl` and `password`; after confirming the
+email, copy the `token_hash` from the confirmation link into
+`confirmationTokenHash`. The collection scripts save the access/refresh
+tokens and created goal ID for subsequent requests. Do not export or share a
+collection after entering credentials or receiving session tokens.
+
+The sequence is an API example, not a claim that frontend integration has
+been tested. `frontend/src/` still contains placeholders; no running frontend,
+forms, or frontend API calls exist yet.
+
+## Optional live-service verification
+
+`npm run test:integration` uses a dedicated Supabase test project with the
+migration applied and email confirmation disabled. Set
+`SUPABASE_TEST_URL`, `SUPABASE_TEST_ANON_KEY`, `SUPABASE_TEST_DB_URL`, and
+`SUPABASE_TEST_PROJECT_REF` to that project's values and explicitly set
+`SUPABASE_TEST_ALLOW_CLEANUP=true`. The database URL should use SSL for hosted
+Supabase. The integration suite creates uniquely named temporary accounts and
+deletes only those exact account IDs and email addresses at teardown (their
+goals/tasks cascade); it does not scan or delete other project data. Without
+all required values and explicit cleanup opt-in, the suite skips.
+
+`npm run test:live:gemini` sends a real request to the model configured in
+`GEMINI_MODEL` (default `gemini-3.8-flash`) and skips unless `GEMINI_API_KEY`
+is set. The test validates returned shape only; it is not part of `npm test`.
+The backend uses the official `@google/genai` SDK Interactions API with a
+structured JSON schema, `store: false`, a 30-second request timeout, and no
+automatic retries. Mocked tests verify the model/configuration arguments,
+JSON parsing, timeout and quota error mapping. No live Gemini or Supabase
+result should be inferred from those mocked tests.

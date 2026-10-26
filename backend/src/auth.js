@@ -110,3 +110,25 @@ export async function confirmEmail(client, body) {
     session: data.session,
   };
 }
+
+export async function refreshSession(client, body) {
+  const refreshToken = typeof body?.refreshToken === 'string' ? body.refreshToken.trim() : '';
+  if (refreshToken.length === 0 || refreshToken.length > 4096 || /\s/.test(refreshToken)) {
+    throw new HttpError(400, 'VALIDATION_ERROR', 'A valid refresh token is required.');
+  }
+
+  const { data, error } = await requestAuthService(() => client.auth.refreshSession({
+    refresh_token: refreshToken,
+  }));
+  if (error || !data.session || !data.user) {
+    if (!error || error.status === 400 || error.status === 401 || error.status === 422) {
+      throw new HttpError(401, 'INVALID_REFRESH_TOKEN', 'The refresh token is invalid, expired, or already used.');
+    }
+    throw new HttpError(503, 'AUTH_SERVICE_UNAVAILABLE', 'The authentication service is unavailable.');
+  }
+
+  return {
+    user: { id: data.user.id, email: data.user.email },
+    session: data.session,
+  };
+}

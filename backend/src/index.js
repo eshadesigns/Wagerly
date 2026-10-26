@@ -4,7 +4,7 @@ import express from 'express';
 import rateLimit from 'express-rate-limit';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
-import { confirmEmail, login, register } from './auth.js';
+import { confirmEmail, login, refreshSession, register } from './auth.js';
 import { generateTasks } from './ai.js';
 import { createSupabaseClient } from './database.js';
 import { HttpError } from './errors.js';
@@ -65,11 +65,20 @@ function errorHandler(logger) {
   };
 }
 
+function positiveInteger(value, fallback, name) {
+  const parsed = Number(value ?? fallback);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error(`${name} must be a positive integer.`);
+  }
+  return parsed;
+}
+
 export function createApp({
   env = process.env,
   createClient = createSupabaseClient,
   generateGoalTasks = generateTasks,
   logger = console.error,
+  authRateLimits = {},
 } = {}) {
   const app = express();
   const allowedOrigins = new Set(
@@ -79,6 +88,28 @@ export function createApp({
       .filter(Boolean),
   );
   const authenticate = createAuthMiddleware(env, createClient);
+  const authRateLimitWindowMs = positiveInteger(
+    env.AUTH_RATE_LIMIT_WINDOW_MS,
+    15 * 60 * 1000,
+    'AUTH_RATE_LIMIT_WINDOW_MS',
+  );
+  const createAuthLimiter = (key, defaultLimit) => {
+    const config = authRateLimits[key] ?? {};
+    return rateLimit({
+      windowMs: config.windowMs ?? authRateLimitWindowMs,
+      limit: config.limit ?? positiveInteger(env[`AUTH_${key.toUpperCase()}_RATE_LIMIT`], defaultLimit, `AUTH_${key.toUpperCase()}_RATE_LIMIT`),
+      standardHeaders: true,
+      legacyHeaders: false,
+      handler: (_req, res) => {
+        res.status(429).json({
+          error: {
+            code: 'AUTH_RATE_LIMITED',
+            message: 'Too many authentication requests. Try again later.',
+          },
+        });
+      },
+    });
+  };
 
   app.use(cors({
     origin(origin, callback) {
@@ -96,21 +127,27 @@ export function createApp({
     res.json({ status: 'ok' });
   });
 
-  app.post('/api/auth/register', async (req, res) => {
+  app.post('/api/auth/register', createAuthLimiter('register', 5), async (req, res) => {
     const client = createClient(env);
     const result = await register(client, req.body);
     res.status(201).json(result);
   });
 
-  app.post('/api/auth/login', async (req, res) => {
+  app.post('/api/auth/login', createAuthLimiter('login', 10), async (req, res) => {
     const client = createClient(env);
     const result = await login(client, req.body);
     res.json(result);
   });
 
-  app.post('/api/auth/verify-email', async (req, res) => {
+  app.post('/api/auth/verify-email', createAuthLimiter('verify_email', 10), async (req, res) => {
     const client = createClient(env);
     const result = await confirmEmail(client, req.body);
+    res.json(result);
+  });
+
+  app.post('/api/auth/refresh', createAuthLimiter('refresh', 10), async (req, res) => {
+    const client = createClient(env);
+    const result = await refreshSession(client, req.body);
     res.json(result);
   });
 

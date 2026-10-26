@@ -34,8 +34,10 @@ calls to integrate yet. API paths and JSON shapes are defined in
 - `backend/src/auth.js`, `goals.js`, and `tasks.js`: auth and goal/task logic.
 - `backend/src/ai.js` and `database.js`: Gemini and Supabase integrations.
 - `supabase/migrations/`: database schema, RLS, and atomic task insertion.
-- `tests/`: Node's built-in test runner for API contracts using mocked
+- `tests/index.js`: Node's built-in test runner for API contracts using mocked
   Supabase/Gemini services.
+- `tests/integration/` and `tests/live/`: opt-in checks against a dedicated
+  Supabase test project and the configured Gemini model.
 
 ## Sprint 1 flow
 
@@ -55,6 +57,8 @@ later-release work.
 - Configure the team's Supabase project, email confirmation template, allowed
   local redirect URL, and apply the SQL migration.
 - Supply a Gemini API key and choose an available model in `GEMINI_MODEL` for
-  live generation. AI behavior is covered by mocked tests only.
+  live generation. The Gemini smoke test is separate from the mocked suite.
+- Run the opt-in Supabase integration suite only against a dedicated test
+  project; mocked tests do not verify its RLS policies or transaction locking.
 - Partners, pacts, task completion, verification, dashboards, and payments
   remain out of scope.

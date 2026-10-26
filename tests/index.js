@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { after, before, describe, it } from 'node:test';
 import { generateTasks } from '../backend/src/ai.js';
 import { HttpError } from '../backend/src/errors.js';
@@ -15,15 +15,19 @@ function createFakeSupabase() {
   const usersByEmail = new Map();
   const usersById = new Map();
   const usersByToken = new Map();
+  const usersByRefreshToken = new Map();
+  const passwordHashes = new Map();
   const goals = [];
   const tasks = [];
 
   function makeSession(user) {
     const accessToken = `access-${randomUUID()}`;
+    const refreshToken = `refresh-${randomUUID()}`;
     usersByToken.set(accessToken, user);
+    usersByRefreshToken.set(refreshToken, user);
     return {
       access_token: accessToken,
-      refresh_token: `refresh-${randomUUID()}`,
+      refresh_token: refreshToken,
       token_type: 'bearer',
       expires_in: 3600,
       user,
@@ -128,14 +132,16 @@ function createFakeSupabase() {
           if (usersByEmail.has(email)) {
             return { data: { user: null, session: null }, error: { code: 'user_already_exists' } };
           }
-          const createdUser = { id: randomUUID(), email, password, confirmed: false };
+          const createdUser = { id: randomUUID(), email, confirmed: false };
           usersByEmail.set(email, createdUser);
           usersById.set(createdUser.id, createdUser);
+          passwordHashes.set(createdUser.id, createHash('sha256').update(password).digest('hex'));
           return { data: { user: createdUser, session: null }, error: null };
         },
         async signInWithPassword({ email, password }) {
           const foundUser = usersByEmail.get(email);
-          if (!foundUser || foundUser.password !== password) {
+          const passwordHash = createHash('sha256').update(password).digest('hex');
+          if (!foundUser || passwordHashes.get(foundUser.id) !== passwordHash) {
             return { data: {}, error: { status: 400, code: 'invalid_credentials' } };
           }
           if (!foundUser.confirmed) {
@@ -144,12 +150,25 @@ function createFakeSupabase() {
           return { data: { user: foundUser, session: makeSession(foundUser) }, error: null };
         },
         async verifyOtp({ token_hash: tokenHash }) {
-          const foundUser = usersById.get(tokenHash.replace('confirm-', ''));
+          const userId = tokenHash.startsWith('confirm-') ? tokenHash.slice('confirm-'.length) : '';
+          const foundUser = usersById.get(userId);
           if (!foundUser) {
-            return { data: {}, error: { code: 'otp_expired' } };
+            return { data: {}, error: { status: 422, code: 'otp_expired' } };
+          }
+          if (foundUser.confirmed) {
+            return { data: {}, error: { status: 422, code: 'otp_expired' } };
           }
           foundUser.confirmed = true;
           return { data: { user: foundUser, session: makeSession(foundUser) }, error: null };
+        },
+        async refreshSession({ refresh_token: refreshToken }) {
+          const refreshedUser = usersByRefreshToken.get(refreshToken);
+          if (!refreshedUser) {
+            return { data: { user: null, session: null }, error: { status: 400, code: 'refresh_token_not_found' } };
+          }
+          usersByRefreshToken.delete(refreshToken);
+          const session = makeSession(refreshedUser);
+          return { data: { user: refreshedUser, session }, error: null };
         },
         async getUser(token) {
           const verifiedUser = usersByToken.get(token);
@@ -197,10 +216,15 @@ async function createHarness(options = {}) {
       SUPABASE_ANON_KEY: 'test-anon-key',
       GEMINI_API_KEY: 'test-gemini-key',
       FRONTEND_ORIGIN: 'http://localhost:5173',
+      AUTH_REGISTER_RATE_LIMIT: '100',
+      AUTH_LOGIN_RATE_LIMIT: '100',
+      AUTH_VERIFY_EMAIL_RATE_LIMIT: '100',
+      AUTH_REFRESH_RATE_LIMIT: '100',
     },
     createClient: database.createClient,
     generateGoalTasks: options.generateGoalTasks ?? (async () => sampleTasks),
     logger: () => {},
+    authRateLimits: options.authRateLimits,
   });
   const server = app.listen(0);
   await new Promise((resolve) => server.once('listening', resolve));
@@ -250,7 +274,11 @@ async function registerAndConfirm(harness, email) {
     body: { tokenHash: `confirm-${registration.body.user.id}` },
   });
   assert.equal(confirmation.status, 200);
-  return { user: registration.body.user, token: confirmation.body.session.access_token };
+  return {
+    user: registration.body.user,
+    token: confirmation.body.session.access_token,
+    session: confirmation.body.session,
+  };
 }
 
 describe('Wagerly API', () => {
@@ -281,6 +309,155 @@ describe('Wagerly API', () => {
     const invalidToken = await harness.request('/api/goals', { token: 'not-a-token' });
     assert.equal(invalidToken.status, 401);
     assert.equal(invalidToken.body.error.code, 'INVALID_ACCESS_TOKEN');
+  });
+
+  it('validates missing registration fields, invalid emails and password length boundaries', async () => {
+    const invalidRegistrations = [
+      { body: { password: 'a-secure-test-password' } },
+      { body: { email: 'missing-password@example.com' } },
+      { body: { email: 'invalid-email', password: 'a-secure-test-password' } },
+      { body: { email: 'short-password@example.com', password: '1234567' } },
+      { body: { email: 'long-password@example.com', password: 'p'.repeat(129) } },
+    ];
+
+    for (const { body } of invalidRegistrations) {
+      const response = await harness.request('/api/auth/register', { method: 'POST', body });
+      assert.equal(response.status, 400);
+      assert.equal(response.body.error.code, 'VALIDATION_ERROR');
+    }
+
+    const invalidLogins = [
+      { password: 'a-secure-test-password' },
+      { email: 'missing-password@example.com' },
+    ];
+    for (const body of invalidLogins) {
+      const response = await harness.request('/api/auth/login', { method: 'POST', body });
+      assert.equal(response.status, 400);
+      assert.equal(response.body.error.code, 'VALIDATION_ERROR');
+    }
+  });
+
+  it('registers successfully, requires confirmation, and permits login after confirmation', async () => {
+    const registration = await harness.request('/api/auth/register', {
+      method: 'POST',
+      body: { email: 'auth-success@example.com', password: 'a-secure-test-password' },
+    });
+    assert.equal(registration.status, 201);
+    assert.equal(registration.body.user.email, 'auth-success@example.com');
+    assert.equal(registration.body.session, null);
+    assert.equal(registration.body.emailConfirmationRequired, true);
+
+    const confirmation = await harness.request('/api/auth/verify-email', {
+      method: 'POST',
+      body: { tokenHash: `confirm-${registration.body.user.id}` },
+    });
+    assert.equal(confirmation.status, 200);
+    assert.ok(confirmation.body.session.access_token);
+
+    const login = await harness.request('/api/auth/login', {
+      method: 'POST',
+      body: { email: 'auth-success@example.com', password: 'a-secure-test-password' },
+    });
+    assert.equal(login.status, 200);
+    assert.equal(login.body.user.id, registration.body.user.id);
+    assert.ok(login.body.session.access_token);
+  });
+
+  it('rejects incorrect passwords and invalid or expired confirmation tokens', async () => {
+    const account = await registerAndConfirm(harness, 'incorrect-password@example.com');
+    const wrongPassword = await harness.request('/api/auth/login', {
+      method: 'POST',
+      body: { email: 'incorrect-password@example.com', password: 'wrong-password' },
+    });
+    assert.equal(wrongPassword.status, 401);
+    assert.equal(wrongPassword.body.error.code, 'INVALID_CREDENTIALS');
+
+    for (const body of [{ tokenHash: 'expired-confirmation-token' }, { tokenHash: '' }, {}]) {
+      const invalidConfirmation = await harness.request('/api/auth/verify-email', {
+        method: 'POST',
+        body,
+      });
+      assert.equal(invalidConfirmation.status, 400);
+      assert.ok(['VALIDATION_ERROR', 'EMAIL_CONFIRMATION_INVALID'].includes(invalidConfirmation.body.error.code));
+    }
+
+    const repeatedConfirmation = await harness.request('/api/auth/verify-email', {
+      method: 'POST',
+      body: { tokenHash: `confirm-${account.user.id}` },
+    });
+    assert.equal(repeatedConfirmation.status, 400);
+    assert.equal(repeatedConfirmation.body.error.code, 'EMAIL_CONFIRMATION_INVALID');
+  });
+
+  it('renews sessions with one-time refresh tokens and rejects invalid or reused tokens', async () => {
+    const account = await registerAndConfirm(harness, 'refresh@example.com');
+    for (const body of [{}, { refreshToken: 'invalid refresh token' }]) {
+      const invalidInput = await harness.request('/api/auth/refresh', {
+        method: 'POST',
+        body,
+      });
+      assert.equal(invalidInput.status, 400);
+      assert.equal(invalidInput.body.error.code, 'VALIDATION_ERROR');
+    }
+
+    const invalidToken = await harness.request('/api/auth/refresh', {
+      method: 'POST',
+      body: { refreshToken: 'expired-refresh-token' },
+    });
+    assert.equal(invalidToken.status, 401);
+    assert.equal(invalidToken.body.error.code, 'INVALID_REFRESH_TOKEN');
+
+    const renewed = await harness.request('/api/auth/refresh', {
+      method: 'POST',
+      body: { refreshToken: account.session.refresh_token },
+    });
+    assert.equal(renewed.status, 200);
+    assert.equal(renewed.body.user.id, account.user.id);
+    assert.notEqual(renewed.body.session.access_token, account.session.access_token);
+    assert.notEqual(renewed.body.session.refresh_token, account.session.refresh_token);
+
+    const reused = await harness.request('/api/auth/refresh', {
+      method: 'POST',
+      body: { refreshToken: account.session.refresh_token },
+    });
+    assert.equal(reused.status, 401);
+    assert.equal(reused.body.error.code, 'INVALID_REFRESH_TOKEN');
+  });
+
+  it('rate limits each authentication endpoint with a consistent JSON 429', async () => {
+    const limited = await createHarness({
+      authRateLimits: {
+        register: { windowMs: 60_000, limit: 1 },
+        login: { windowMs: 60_000, limit: 1 },
+        verify_email: { windowMs: 60_000, limit: 1 },
+        refresh: { windowMs: 60_000, limit: 1 },
+      },
+    });
+
+    try {
+      const endpoints = [
+        ['/api/auth/register', { email: 'limit@example.com', password: 'a-secure-test-password' }],
+        ['/api/auth/login', { email: 'limit@example.com', password: 'a-secure-test-password' }],
+        ['/api/auth/verify-email', { tokenHash: 'invalid' }],
+        ['/api/auth/refresh', { refreshToken: 'invalid-refresh-token' }],
+      ];
+
+      for (const [path, body] of endpoints) {
+        const first = await limited.request(path, { method: 'POST', body: {} });
+        assert.equal(first.status, 400);
+        assert.equal(first.body.error.code, 'VALIDATION_ERROR');
+        const limitedResponse = await limited.request(path, { method: 'POST', body });
+        assert.equal(limitedResponse.status, 429);
+        assert.deepEqual(limitedResponse.body, {
+          error: {
+            code: 'AUTH_RATE_LIMITED',
+            message: 'Too many authentication requests. Try again later.',
+          },
+        });
+      }
+    } finally {
+      await limited.close();
+    }
   });
 
   it('handles email confirmation, login, goal ownership and validation', async () => {
@@ -455,6 +632,7 @@ describe('Gemini integration', () => {
 
   it('uses the configured model and validates structured task output', async () => {
     let requestOptions;
+    let requestOptions2;
     let clientOptions;
     const tasks = await generateTasks(goal, {
       GEMINI_API_KEY: 'test-key',
@@ -462,12 +640,13 @@ describe('Gemini integration', () => {
     }, (options) => {
       clientOptions = options;
       return {
-      interactions: {
-        async create(options) {
-          requestOptions = options;
-          return { status: 'completed', output_text: JSON.stringify({ tasks: sampleTasks }) };
+        interactions: {
+          async create(options, sdkOptions) {
+            requestOptions = options;
+            requestOptions2 = sdkOptions;
+            return { status: 'completed', output_text: JSON.stringify({ tasks: sampleTasks }) };
+          },
         },
-      },
       };
     });
 
@@ -476,9 +655,11 @@ describe('Gemini integration', () => {
     assert.equal(requestOptions.response_format.schema.properties.tasks.minItems, 3);
     assert.equal(requestOptions.response_format.schema.properties.tasks.maxItems, 7);
     assert.match(requestOptions.input, /Build a garden/);
+    assert.equal(requestOptions.store, false);
     assert.equal(tasks.length, 3);
-    assert.equal(clientOptions.httpOptions.timeout, 30000);
-    assert.equal(clientOptions.httpOptions.retryOptions.attempts, 1);
+    assert.equal(clientOptions.apiKey, 'test-key');
+    assert.equal(requestOptions2.timeout_ms, 30000);
+    assert.deepEqual(requestOptions2.retries, { strategy: 'none' });
   });
 
   it('maps Gemini quota, timeout, blocked, invalid JSON and invalid schema responses', async () => {
@@ -503,8 +684,15 @@ describe('Gemini integration', () => {
       code: 'AI_TIMEOUT',
       status: 504,
     });
-    await assert.rejects(runWith({ status: 'failed', output_text: '' }), {
+    await assert.rejects(runWith({
+      status: 'failed',
+      errors: [{ code: 'safety_blocked', message: 'Response blocked by safety policy.' }],
+    }), {
       code: 'AI_BLOCKED',
+      status: 502,
+    });
+    await assert.rejects(runWith({ status: 'failed', errors: [{ code: 'internal_error' }] }), {
+      code: 'AI_UNAVAILABLE',
       status: 502,
     });
     await assert.rejects(runWith({ status: 'completed', output_text: 'not json' }), {

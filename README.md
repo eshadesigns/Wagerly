@@ -40,10 +40,20 @@ npm run dev
 ```
 
 The API starts at `http://localhost:3000`; `GET /health` checks server
-availability. Run the tests with `npm test`. For setup details, the API
-contract, and the signup-to-task demo sequence, read
-[`docs/api.md`](./docs/api.md).
+availability. Run fast mocked tests with `npm test`. The live Supabase and
+Gemini checks are separate opt-in commands documented in
+[`docs/api.md`](./docs/api.md). Import the
+[Postman collection](./docs/Wagerly-Sprint-1.postman_collection.json) for the
+signup, confirmation, login, refresh, goal, and task demo.
+
+Run `npm run test:integration` only with the dedicated Supabase test-project
+configuration and explicit cleanup opt-in; run `npm run test:live:gemini` to
+send a real smoke-test request using your configured Gemini key.
 
 Each teammate can run a separate local API using the team's Supabase project
 URL and anon/publishable key, plus their own Gemini API key. Never use or share
 a Supabase service-role key. Keep `.env` local and private.
+
+The live Supabase integration suite requires a separate dedicated test project,
+the migration, disabled email confirmation, and explicit cleanup opt-in. Do
+not point its `SUPABASE_TEST_*` values at a production project.

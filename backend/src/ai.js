@@ -63,6 +63,16 @@ function providerFailure(error) {
   return new HttpError(502, 'AI_UNAVAILABLE', 'Gemini could not generate a task plan.');
 }
 
+function providerResponseFailure(response) {
+  const details = Array.isArray(response?.errors)
+    ? response.errors.map((error) => `${error?.code ?? ''} ${error?.message ?? ''}`).join(' ').toLowerCase()
+    : '';
+  if (/\b(safety|blocked|prohibited|harmful)\b/.test(details)) {
+    return new HttpError(502, 'AI_BLOCKED', 'Gemini did not return a usable task plan.');
+  }
+  return new HttpError(502, 'AI_UNAVAILABLE', 'Gemini could not complete the task generation request.');
+}
+
 export async function generateTasks(
   goal,
   env = process.env,
@@ -74,7 +84,6 @@ export async function generateTasks(
 
   const client = createClient({
     apiKey: env.GEMINI_API_KEY,
-    httpOptions: { timeout: 30000, retryOptions: { attempts: 1 } },
   });
   const model = env.GEMINI_MODEL || 'gemini-3.8-flash';
   let response;
@@ -92,13 +101,20 @@ export async function generateTasks(
         mime_type: 'application/json',
         schema: TASK_SCHEMA,
       },
+      store: false,
+    }, {
+      timeout_ms: 30000,
+      retries: { strategy: 'none' },
     });
   } catch (error) {
     throw providerFailure(error);
   }
 
-  if (response?.status !== 'completed' || !response?.output_text) {
-    throw new HttpError(502, 'AI_BLOCKED', 'Gemini did not return a usable task plan.');
+  if (response?.status !== 'completed') {
+    throw providerResponseFailure(response);
+  }
+  if (typeof response.output_text !== 'string' || response.output_text.length === 0) {
+    throw new HttpError(502, 'AI_INVALID_OUTPUT', 'Gemini returned an empty task plan.');
   }
 
   let parsed;
