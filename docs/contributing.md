@@ -3,11 +3,7 @@
 ## Before starting
 
 - Check the current repository state and existing documentation.
-- Read [the architecture overview](./architecture.md) and confirm pending
-  technology or product decisions with the team before making them part of the
-  implementation.
-- Keep changes within the requested scope. Do not add UI, backend behavior, or
-  external integrations without an agreed task.
+- Read [the architecture overview](./architecture.md) and [the API contract](./api.md).
 
 ## Branches and pull requests
 
@@ -22,17 +18,16 @@
 
 ## Where work belongs
 
-Place client code under `frontend/` and server/domain logic and integrations
-under `backend/`. Add tests under `tests/`. Keep architecture and collaboration
-guidance in `docs/`.
-
-The frontend currently uses React, TypeScript, Vite, and Tailwind CSS. Keep
-network requests behind `frontend/src/api.ts` and shared request/response
-shapes in `frontend/src/types.ts`. Update the architecture documentation when
-the team approves a meaningful change in direction.
+Keep API behavior in the existing Express backend and update the API contract
+when request or response shapes change. The frontend uses React, TypeScript,
+Vite, and Tailwind CSS; keep its requests behind `frontend/src/api.ts` and
+models in `frontend/src/types.ts`. Do not describe the frontend as integrated
+with the Sprint 1 API until authentication and goal/task mapping are tested.
 
 ## Validation
 
-Run `npm run build` from `frontend/` to type-check and build the client. The
-backend and tests do not yet have configured commands. Document the exact
-checks performed in each pull request.
+Run `npm run build` from `frontend/` to type-check and build the client. Run
+`npm test` from the repository root for the Node built-in backend test suite.
+Live Supabase and Gemini checks require team-provided credentials and are
+separate opt-in commands. Document the exact checks performed in each pull
+request.
