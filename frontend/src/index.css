@@ -1,0 +1,88 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: 'Plus Jakarta Sans', system-ui, sans-serif;
+  --font-mono: 'Plus Jakarta Sans', system-ui, sans-serif;
+
+  --color-white: #e5f6ff;
+  --color-black: #161514;
+
+  --color-zinc-50: #e5f6ff;
+  --color-zinc-100: #e5f6ff;
+  --color-zinc-200: #e5f6ff;
+  --color-zinc-300: #e5f6ff;
+  --color-zinc-400: #161514;
+  --color-zinc-500: #161514;
+  --color-zinc-600: #161514;
+  --color-zinc-700: #161514;
+  --color-zinc-800: #161514;
+  --color-zinc-900: #161514;
+  --color-zinc-950: #161514;
+
+  --color-indigo-50: #e5f6ff;
+  --color-indigo-100: #e5f6ff;
+  --color-indigo-200: #e5f6ff;
+  --color-indigo-300: #d42295;
+  --color-indigo-400: #d42295;
+  --color-indigo-500: #d42295;
+  --color-indigo-600: #d42295;
+  --color-indigo-700: #d42295;
+  --color-indigo-800: #161514;
+  --color-indigo-900: #161514;
+
+  --color-emerald-50: #90cf8a;
+  --color-emerald-100: #90cf8a;
+  --color-emerald-200: #90cf8a;
+  --color-emerald-300: #90cf8a;
+  --color-emerald-400: #90cf8a;
+  --color-emerald-500: #90cf8a;
+  --color-emerald-600: #161514;
+  --color-emerald-700: #161514;
+  --color-emerald-800: #161514;
+  --color-emerald-900: #161514;
+
+  --color-amber-50: #f46b16;
+  --color-amber-100: #f46b16;
+  --color-amber-200: #f46b16;
+  --color-amber-300: #f46b16;
+  --color-amber-400: #f46b16;
+  --color-amber-500: #f46b16;
+  --color-amber-600: #161514;
+  --color-amber-700: #161514;
+  --color-amber-800: #161514;
+  --color-amber-900: #161514;
+
+  --color-orange-50: #f46b16;
+  --color-orange-100: #f46b16;
+  --color-orange-200: #f46b16;
+  --color-orange-300: #f46b16;
+  --color-orange-400: #f46b16;
+  --color-orange-500: #f46b16;
+  --color-orange-600: #161514;
+  --color-orange-700: #161514;
+
+  --color-red-50: #f46b16;
+  --color-red-100: #f46b16;
+  --color-red-200: #f46b16;
+  --color-red-400: #f46b16;
+  --color-red-500: #f46b16;
+  --color-red-600: #161514;
+  --color-red-700: #161514;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: #e5f6ff;
+  color: #161514;
+  -webkit-font-smoothing: antialiased;
+}
+
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-thumb { background: #d42295; border-radius: 2px; }
+::-webkit-scrollbar-track { background: transparent; }
+
+input[type="date"]::-webkit-calendar-picker-indicator {
+  opacity: 0.5;
+  cursor: pointer;
+}

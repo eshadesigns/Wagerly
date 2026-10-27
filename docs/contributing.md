@@ -22,17 +22,17 @@
 
 ## Where work belongs
 
-Place future client code under `frontend/` and server/domain logic and
-integrations under `backend/`. Add tests under `tests/`. Keep architecture and
-collaboration guidance in `docs/`.
+Place client code under `frontend/` and server/domain logic and integrations
+under `backend/`. Add tests under `tests/`. Keep architecture and collaboration
+guidance in `docs/`.
 
-These are starting boundaries, not permission to implement the planned
-features. Update the architecture documentation when the team approves a
-meaningful change in direction.
+The frontend currently uses React, TypeScript, Vite, and Tailwind CSS. Keep
+network requests behind `frontend/src/api.ts` and shared request/response
+shapes in `frontend/src/types.ts`. Update the architecture documentation when
+the team approves a meaningful change in direction.
 
 ## Validation
 
-This scaffold has no configured build, lint, or test commands. For
-documentation-only changes, check the rendered Markdown and `git status`.
-Document the exact checks performed in each pull request. Add tooling when
-working application code establishes a concrete need.
+Run `npm run build` from `frontend/` to type-check and build the client. The
+backend and tests do not yet have configured commands. Document the exact
+checks performed in each pull request.
