@@ -3,10 +3,10 @@
 **Stake your success.**
 
 Wagerly helps people turn goals into actionable plans and build accountability.
-The Sprint 1 backend provides Supabase Auth, personal goals, and Gemini-generated
-task plans. The frontend is a design-based prototype with browser-local
-persistence; it is not yet integrated with the Sprint 1 backend. Partners,
-pacts, shared verification, and payments are not implemented by that backend.
+The Sprint 1 app connects its React frontend to an Express backend for Supabase
+authentication, personal goals, and Gemini-generated task plans. Partners,
+pacts, shared verification, task completion, stakes, and payments are not
+implemented in Sprint 1.
 
 ## Stack
 
@@ -23,47 +23,70 @@ Prerequisite: Node.js 20+ and npm.
 ```sh
 cd frontend
 npm install
+```
+
+In PowerShell, create the local frontend environment file from the example if
+you need to override the default API origin:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Then start Vite:
+
+```sh
 npm run dev
 ```
 
-Open the local URL printed by Vite (usually `http://localhost:5173`). The app
-starts with no sample data and stores goals in this browser's local storage.
-Build and preview the production frontend with `npm run build` and
-`npm run preview`.
+Open `http://localhost:5173`. The frontend calls
+`http://localhost:3000` by default; change `VITE_API_BASE_URL` in
+`frontend/.env` only when using a different local API origin. Goal and task
+records are loaded from the backend, not browser-local records. The browser
+stores the Supabase session for reload/refresh support. Build and preview the
+production frontend with `npm run build` and `npm run preview`.
 
 ## Run the backend locally
 
-The backend requires a configured Supabase project. Gemini credentials are
-needed only for live AI generation.
+Run this in a separate VS Code terminal from the frontend. The backend requires
+a configured Supabase project. Gemini credentials are needed for live AI
+generation.
 
 ```sh
 npm install
-cp .env.example .env
 ```
 
-Fill in the backend values in `.env`, then apply
+In PowerShell, create the private backend environment file:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Set `FRONTEND_ORIGIN=http://localhost:5173` and fill in the required
+`SUPABASE_URL` and `SUPABASE_ANON_KEY` values. Set `GEMINI_API_KEY` for live
+task generation; `GEMINI_MODEL` and `PORT` are optional. Then apply
 [`supabase/migrations/20261026000000_sprint1_backend.sql`](./supabase/migrations/20261026000000_sprint1_backend.sql)
-to the Supabase project using its SQL Editor or migration tooling. Configure
-`SUPABASE_URL`, `SUPABASE_ANON_KEY`, `GEMINI_API_KEY` (for live task generation),
-`GEMINI_MODEL` (optional), `PORT`, and `FRONTEND_ORIGIN`. The API starts at
-`http://localhost:3000`:
+to the shared Supabase project using its SQL Editor or migration tooling.
+Each teammate creates their own local `.env` and `frontend/.env`; share neither
+file. Do not use a Supabase service-role key. Start the API at
+`http://localhost:3000` with:
 
 ```sh
 npm run dev
 ```
 
-`GET /health` checks server availability. Run the mocked backend tests with
-`npm test`. See [`docs/api.md`](./docs/api.md) for the API contract, Supabase
-email-setup details, and opt-in live tests.
+`GET /health` checks server availability. Run backend mocked tests from the
+repository root with `npm test`; run the frontend-to-Express tests from
+`frontend/` with `npm test`, and its type check/build with `npm run build`.
+See [`docs/api.md`](./docs/api.md) for the API contract, Supabase email setup,
+and opt-in live tests.
 
 ## Frontend/backend integration status
 
-The frontend currently uses browser local storage. Its optional
-`VITE_API_BASE_URL` adapter describes an earlier, frontend-specific REST shape;
-it does **not** match the Sprint 1 backend contract in [`docs/api.md`](./docs/api.md)
-and should not be pointed at that backend yet. Authentication and mapping the
-design's partner, stake, milestone, and verification flows onto backend
-capabilities remain to be implemented. Never expose server-only secrets in
-`VITE_` variables.
+Frontend authentication, goals, and generated tasks use the documented Sprint 1
+backend endpoints. Automated integration tests run the actual Express app with
+Supabase and Gemini mocked; they do not verify live Supabase policies, live
+Gemini, or deployment behavior. The frontend intentionally does not expose
+partner, stake, task-completion, or verification actions as working features.
+Never expose server-only secrets in `VITE_` variables.
 
 Keep `.env` local and private. Never use or share a Supabase service-role key.

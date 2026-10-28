@@ -1,17 +1,16 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import {
-  createWager as persistWager,
-  generateMilestones,
-  getWagers,
-  isLocalMode,
-  updateWager as persistWagerUpdate,
+  ApiError,
+  defaultApiClient,
 } from './api'
-import type { CreateState, Milestone, Wager, WagerStatus } from './types'
+import type { ApiClient } from './api'
+import type { AuthSession, CreateState, Goal, GoalWithTasks, Milestone, Task, Wager, WagerStatus } from './types'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-type Screen = 'dashboard' | 'create' | 'active' | 'verify' | 'completion' | 'history'
+type Screen = 'dashboard' | 'create' | 'detail' | 'active' | 'verify' | 'completion' | 'history'
 type CreateStep = 1 | 2 | 3 | 4 | 5
+type ManualTaskDraft = { id: string; title: string; description: string }
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
@@ -20,11 +19,11 @@ function cn(...classes: (string | undefined | boolean | null)[]) {
 }
 
 function fmtDate(d: string) {
-  return new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+  return new Date(`${d.slice(0, 10)}T12:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
 function daysUntil(d: string) {
-  const deadline = new Date(`${d}T00:00:00`)
+  const deadline = new Date(`${d.slice(0, 10)}T00:00:00`)
   return Math.max(0, Math.ceil((deadline.getTime() - new Date().setHours(0, 0, 0, 0)) / 86400000))
 }
 
@@ -216,14 +215,21 @@ function StatCard({ label, value, sub, accent }: { label: string; value: string;
 
 // ─── Sidebar ──────────────────────────────────────────────────────────────────
 
-function Sidebar({ screen, setScreen }: { screen: Screen; setScreen: (s: Screen) => void }) {
+function Sidebar({
+  screen, setScreen, email, onLogout,
+}: {
+  screen: Screen
+  setScreen: (s: Screen) => void
+  email: string
+  onLogout: () => void
+}) {
   const items = [
     { id: 'dashboard', label: 'Dashboard', icon: icons.home },
     { id: 'history', label: 'History', icon: icons.history },
   ] as const
 
   return (
-    <aside className="w-56 shrink-0 bg-zinc-950 flex flex-col h-screen sticky top-0">
+    <aside className="w-56 shrink-0 bg-[#161514] flex flex-col h-screen sticky top-0 border-r border-black/10">
       {/* Logo */}
       <div className="px-5 pt-6 pb-4">
         <div className="flex items-center gap-2">
@@ -240,21 +246,21 @@ function Sidebar({ screen, setScreen }: { screen: Screen; setScreen: (s: Screen)
           onClick={() => setScreen('create')}
           className="w-full flex items-center gap-2 px-3 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium rounded-xl transition-colors cursor-pointer"
         >
-          {icons.plus} New Wager
+          {icons.plus} New Goal
         </button>
       </div>
 
       <div className="px-3 py-2 flex-1">
-        <p className="px-2 py-1 text-xs font-mono text-zinc-600 uppercase tracking-wider mb-1">Menu</p>
+        <p className="px-2 py-1 text-xs font-mono uppercase tracking-wider mb-1 text-[#e5f6ff]/40">Menu</p>
         {items.map(({ id, label, icon }) => (
           <button
             key={id}
             onClick={() => setScreen(id)}
             className={cn(
-              'w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-colors cursor-pointer mb-0.5',
-              (screen === id || (screen === 'active' && id === 'dashboard'))
-                ? 'bg-zinc-800 text-white'
-                : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900'
+              "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-colors cursor-pointer mb-0.5",
+              (screen === id || (screen === 'detail' && id === 'dashboard'))
+                ? "bg-white/15 text-[#e5f6ff]"
+                : "text-[#e5f6ff]/60 hover:text-[#e5f6ff] hover:bg-white/10"
             )}
           >
             {icon} {label}
@@ -262,8 +268,17 @@ function Sidebar({ screen, setScreen }: { screen: Screen; setScreen: (s: Screen)
         ))}
       </div>
 
-      <div className="px-5 py-4 border-t border-zinc-800">
-        <p className="text-zinc-400 text-xs">Your personal workspace</p>
+      <div className="px-4 py-4 border-t border-white/10">
+        <div className="flex items-center gap-2.5 mb-2">
+          <div className="w-7 h-7 rounded-full bg-white/10 flex items-center justify-center text-[#e5f6ff]/80">
+            {icons.user}
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-[10px] font-mono text-[#e5f6ff]/40 uppercase tracking-wider leading-none">Profile</p>
+            <p className="text-xs text-[#e5f6ff] font-medium truncate mt-0.5" title={email}>{email}</p>
+          </div>
+        </div>
+        <button onClick={onLogout} className="text-xs text-[#d42295] hover:underline transition-colors cursor-pointer font-semibold">Sign out</button>
       </div>
     </aside>
   )
@@ -272,254 +287,430 @@ function Sidebar({ screen, setScreen }: { screen: Screen; setScreen: (s: Screen)
 // ─── Dashboard ────────────────────────────────────────────────────────────────
 
 function Dashboard({
-  wagers, setScreen, setSelectedId,
+  goals, setScreen, setSelectedId,
 }: {
-  wagers: Wager[]
+  goals: GoalWithTasks[]
   setScreen: (s: Screen) => void
   setSelectedId: (id: string) => void
 }) {
-  const active = wagers.filter(w => w.status !== 'completed' && w.status !== 'missed')
-  const completed = wagers.filter(w => w.status === 'completed').length
-  const allMilestones = wagers.flatMap(w => w.milestones)
-  const verifiedMilestones = allMilestones.filter(m => m.verified).length
-  const completionRate = wagers.length ? Math.round((completed / wagers.length) * 100) : null
-
   return (
     <div className="p-8 max-w-5xl">
-      {/* Header */}
       <div className="flex items-start justify-between mb-8">
         <div>
           <p className="text-zinc-400 text-sm font-mono mb-1">{new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric', year: 'numeric' })}</p>
-          <h1 className="text-2xl font-semibold text-zinc-900">Your commitments</h1>
+          <h1 className="text-2xl font-semibold text-zinc-900">Your goals</h1>
         </div>
-        <Btn onClick={() => setScreen('create')} size="md">
-          {icons.plus} Create commitment
-        </Btn>
+        <Btn onClick={() => setScreen('create')} size="md">{icons.plus} Create goal</Btn>
       </div>
 
-      {/* Stats */}
-      <div className="grid grid-cols-4 gap-4 mb-8">
-        <StatCard label="Active commitments" value={String(active.length)} sub="in progress" />
-        <StatCard label="Completed goals" value={String(completed)} sub="verified and complete" accent="text-indigo-700" />
-        <StatCard label="Milestones verified" value={String(verifiedMilestones)} sub={`of ${allMilestones.length} milestones`} />
-        <StatCard label="Completion rate" value={completionRate === null ? '—' : `${completionRate}%`} sub="of your commitments" accent="text-emerald-700" />
+      <div className="grid grid-cols-2 gap-4 mb-8 max-w-xl">
+        <StatCard label="Personal goals" value={String(goals.length)} sub="saved to your account" />
+        <StatCard label="Generated tasks" value={String(goals.reduce((count, goal) => count + goal.tasks.length, 0))} sub="AI-planned next steps" accent="text-indigo-700" />
       </div>
 
-      {/* Active Wagers */}
       <div className="mb-2">
-        <h2 className="text-sm font-mono text-zinc-400 uppercase tracking-wider mb-4">Active commitments</h2>
+        <h2 className="text-sm font-mono text-zinc-400 uppercase tracking-wider mb-4">Goals</h2>
         <div className="flex flex-col gap-4">
-          {active.length === 0 && (
+          {goals.length === 0 && (
             <Card className="p-8 text-center">
-              <p className="text-zinc-600 font-medium mb-1">Nothing in progress yet</p>
-              <p className="text-zinc-400 text-sm mb-4">Create a goal and break it into milestones to get started.</p>
+              <p className="text-zinc-600 font-medium mb-1">Nothing here yet</p>
+              <p className="text-zinc-400 text-sm mb-4">Create a goal and generate actionable tasks to get started.</p>
               <Btn onClick={() => setScreen('create')} size="sm">{icons.plus} Create a goal</Btn>
             </Card>
           )}
-          {active.map(wager => (
-            <WagerCard
-              key={wager.id}
-              wager={wager}
-              onClick={() => { setSelectedId(wager.id); setScreen('active') }}
+          {goals.map(goal => (
+            <GoalCard
+              key={goal.id}
+              goal={goal}
+              onClick={() => { setSelectedId(goal.id); setScreen('detail') }}
             />
           ))}
         </div>
       </div>
+    </div>
+  )
+}
 
-      {/* Completed */}
-      {wagers.some(w => w.status === 'completed') && (
-        <div className="mt-8">
-          <h2 className="text-sm font-mono text-zinc-400 uppercase tracking-wider mb-4">Completed</h2>
-          <div className="flex flex-col gap-3">
-            {wagers.filter(w => w.status === 'completed').map(wager => (
-              <WagerCard
-                key={wager.id}
-                wager={wager}
-                onClick={() => { setSelectedId(wager.id); setScreen('completion') }}
-              />
-            ))}
-          </div>
+function GoalCard({ goal, onClick }: { goal: GoalWithTasks; onClick: () => void }) {
+  return (
+    <Card onClick={onClick} className="p-5">
+      <div className="flex items-start justify-between gap-4 mb-4">
+        <div className="min-w-0 flex-1">
+          <h3 className="font-semibold text-zinc-900 truncate">{goal.title}</h3>
+          {goal.description && <p className="text-sm text-zinc-500 mt-1 line-clamp-2">{goal.description}</p>}
+        </div>
+        <span className="text-zinc-300 shrink-0">{icons.chevRight}</span>
+      </div>
+
+      <div className="flex items-center justify-between text-xs text-zinc-500">
+        <span className="font-mono">{goal.tasks.length} {goal.tasks.length === 1 ? 'task' : 'tasks'}</span>
+        <span className="flex items-center gap-1">{icons.clock} Due {fmtDate(goal.deadline)}</span>
+      </div>
+    </Card>
+  )
+}
+
+function GoalDetail({
+  goal, setScreen, onTasksChanged, api,
+}: {
+  goal: GoalWithTasks
+  setScreen: (s: Screen) => void
+  onTasksChanged: (tasks: Task[]) => void
+  api: ApiClient
+}) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const busyRef = useRef(false)
+
+  async function generate() {
+    if (busyRef.current) return
+    busyRef.current = true
+    setBusy(true)
+    setError(null)
+    try {
+      let tasks: Task[]
+      try {
+        tasks = await api.generateTasks(goal.id)
+      } catch (cause) {
+        if (!(cause instanceof ApiError) || cause.code !== 'TASKS_ALREADY_GENERATED') throw cause
+        tasks = await api.getTasks(goal.id)
+      }
+      onTasksChanged(tasks)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not generate tasks.')
+    } finally {
+      setBusy(false)
+      busyRef.current = false
+    }
+  }
+
+  return (
+    <div className="p-8 max-w-3xl">
+      <button onClick={() => setScreen('dashboard')} className="flex items-center gap-2 text-sm text-zinc-500 hover:text-zinc-900 mb-6 cursor-pointer">
+        {icons.chevLeft} Back to goals
+      </button>
+      <div className="flex items-start justify-between gap-5 mb-6">
+        <div>
+          <p className="text-xs font-mono text-zinc-400 uppercase tracking-wider mb-2">Personal goal</p>
+          <h1 className="text-2xl font-semibold text-zinc-900">{goal.title}</h1>
+          <p className="text-sm text-zinc-500 mt-2">Due {fmtDate(goal.deadline)}</p>
+        </div>
+        {goal.tasks.length === 0 && (
+          <Btn onClick={generate} disabled={busy} size="md">{icons.sparkles} {busy ? 'Generating…' : 'Generate tasks'}</Btn>
+        )}
+      </div>
+
+      {goal.description && <Card className="p-5 mb-6"><p className="text-sm text-zinc-700 whitespace-pre-wrap">{goal.description}</p></Card>}
+      {error && <p role="alert" className="mb-5 text-sm text-red-700">{error}</p>}
+      <h2 className="text-sm font-mono text-zinc-400 uppercase tracking-wider mb-4">Tasks</h2>
+      {busy && <p role="status" className="mb-4 text-sm text-zinc-500">Generating tasks…</p>}
+      {goal.tasks.length === 0 && !busy ? (
+        <Card className="p-6 text-sm text-zinc-500">No tasks saved for this goal yet. Generate a plan to get started.</Card>
+      ) : (
+        <div className="flex flex-col gap-3">
+          {goal.tasks.map(task => (
+            <Card key={task.id} className="p-5">
+              <div className="flex gap-3">
+                <span className="w-7 h-7 rounded-full bg-indigo-50 text-indigo-700 text-xs flex items-center justify-center font-mono shrink-0">{task.display_order}</span>
+                <div>
+                  <h3 className="font-semibold text-zinc-900">{task.title}</h3>
+                  <p className="text-sm text-zinc-500 mt-1 whitespace-pre-wrap">{task.description}</p>
+                </div>
+              </div>
+            </Card>
+          ))}
         </div>
       )}
     </div>
   )
 }
 
-function WagerCard({ wager, onClick }: { wager: Wager; onClick: () => void }) {
-  const completedMilestones = wager.milestones.filter(m => m.completed).length
-  const pendingVerify = wager.milestones.some(m => m.pendingVerification)
-
-  return (
-    <Card onClick={onClick} className="p-5">
-      <div className="flex items-start justify-between gap-4 mb-4">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 mb-1">
-            {pendingVerify && (
-              <span className="inline-flex items-center gap-1 bg-amber-50 text-amber-700 border border-amber-200 text-xs font-mono px-2 py-0.5 rounded-full">
-                <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
-                Needs Verification
-              </span>
-            )}
-          </div>
-          <h3 className="font-semibold text-zinc-900 truncate">{wager.goal}</h3>
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
-          <Badge status={wager.status} />
-          <span className="text-zinc-300">{icons.chevRight}</span>
-        </div>
-      </div>
-
-      <ProgressBar value={wager.progress} className="mb-3" />
-
-      <div className="flex items-center justify-between text-xs text-zinc-500">
-        <div className="flex items-center gap-4">
-          <span className="font-mono">{completedMilestones}/{wager.milestones.length} milestones</span>
-          <span className="flex items-center gap-1">{icons.clock} {daysUntil(wager.deadline)}d left</span>
-        </div>
-        <div className="flex items-center gap-3">
-          {wager.stake.type === 'financial' ? (
-            <span className="flex items-center gap-1 font-mono text-zinc-700 font-medium">{icons.shield} ${wager.stake.amount}</span>
-          ) : (
-            <span className="text-zinc-400 max-w-[140px] truncate">{wager.stake.description}</span>
-          )}
-          <div className="flex items-center gap-1.5">
-            <Avatar initials={wager.partner.initials} size="sm" color={wager.partner.color} />
-            <span className="text-zinc-500">{wager.partner.name.split(' ')[0]}</span>
-          </div>
-        </div>
-      </div>
-    </Card>
-  )
-}
-
 // ─── Create Wager ─────────────────────────────────────────────────────────────
 
-const EMPTY_CREATE: CreateState = {
-  goal: '', deadline: '', planMode: null, milestones: [],
-  stakeType: null, stakeAmount: '', stakeDescription: '',
-  partnerName: '', partnerHandle: '',
-}
+function CreateWager({
+  setScreen, onGoalSaved, onOpenGoal, api,
+}: {
+  setScreen: (s: Screen) => void
+  onGoalSaved: (goal: Goal) => void
+  onOpenGoal: (goal: Goal, tasks: Task[]) => void
+  api: ApiClient
+}) {
+  const [step, setStep] = useState<1 | 2>(1)
+  const [title, setTitle] = useState('')
+  const [description, setDescription] = useState('')
+  const [deadline, setDeadline] = useState('')
+  const [goal, setGoal] = useState<Goal | null>(null)
+  const [tasks, setTasks] = useState<Task[]>([])
+  const [taskMode, setTaskMode] = useState<'ai' | 'manual'>('ai')
+  const [manualTasks, setManualTasks] = useState<ManualTaskDraft[]>([
+    { id: genId(), title: '', description: '' },
+  ])
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const busyRef = useRef(false)
 
-function CreateWager({ setScreen, onCommit }: { setScreen: (s: Screen) => void; onCommit: (w: Omit<Wager, 'id'>) => Promise<void> }) {
-  const [step, setStep] = useState<CreateStep>(1)
-  const [form, setForm] = useState<CreateState>(EMPTY_CREATE)
-  const [aiLoading, setAiLoading] = useState(false)
-  const [planError, setPlanError] = useState<string | null>(null)
-  const [saving, setSaving] = useState(false)
-  const [saveError, setSaveError] = useState<string | null>(null)
-
-  const steps = ['Goal', 'Plan', 'Stakes', 'Partner', 'Review']
-
-  function patch(partial: Partial<CreateState>) {
-    setForm(f => ({ ...f, ...partial }))
-  }
-
-  async function generateAI() {
-    setAiLoading(true)
-    setPlanError(null)
-    patch({ planMode: 'ai', milestones: [] })
+  async function generateForGoal(savedGoal: Goal) {
+    if (busyRef.current) return
+    busyRef.current = true
+    setError(null)
+    setBusy(true)
     try {
-      patch({ milestones: await generateMilestones({ goal: form.goal, deadline: form.deadline }) })
-    } catch (error) {
-      patch({ planMode: null })
-      setPlanError(error instanceof Error ? error.message : 'Could not generate a plan.')
+      try {
+        setTasks(await api.generateTasks(savedGoal.id))
+      } catch (cause) {
+        if (!(cause instanceof ApiError) || cause.code !== 'TASKS_ALREADY_GENERATED') throw cause
+        setTasks(await api.getTasks(savedGoal.id))
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not generate tasks.')
     } finally {
-      setAiLoading(false)
+      setBusy(false)
+      busyRef.current = false
     }
   }
 
-  const canNext: Record<CreateStep, boolean> = {
-    1: form.goal.trim().length > 3 && !!form.deadline,
-    2: form.milestones.length > 0 && form.milestones.every(m => m.title.trim() && m.dueDate),
-    3: form.stakeType === 'financial' ? !!form.stakeAmount : (form.stakeType === 'custom' ? !!form.stakeDescription.trim() : false),
-    4: form.partnerName.trim().length > 1,
-    5: true,
-  }
-
-  async function commit() {
-    setSaving(true)
-    setSaveError(null)
-    const newWager: Omit<Wager, 'id'> = {
-      goal: form.goal,
-      deadline: form.deadline,
-      progress: 0,
-      status: 'on-track',
-      milestones: form.milestones,
-      stake: form.stakeType === 'financial'
-        ? { type: 'financial', amount: Number(form.stakeAmount) }
-        : { type: 'custom', description: form.stakeDescription },
-      partner: {
-        name: form.partnerName,
-        handle: form.partnerHandle || `@${form.partnerName.toLowerCase().replace(/\s+/g, '')}`,
-        initials: form.partnerName.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase(),
-        color: 'indigo',
-      },
-      createdAt: new Date().toISOString().split('T')[0],
-    }
+  async function saveAndGenerate() {
+    if (busyRef.current) return
+    busyRef.current = true
+    setBusy(true)
+    setError(null)
     try {
-      await onCommit(newWager)
-      setScreen('dashboard')
-    } catch (error) {
-      setSaveError(error instanceof Error ? error.message : 'Could not save your commitment.')
+      const savedGoal = await api.createGoal({
+        title: title.trim(),
+        description: description.trim(),
+        deadline,
+      })
+      setGoal(savedGoal)
+      onGoalSaved(savedGoal)
+      setStep(2)
+      try {
+        setTasks(await api.generateTasks(savedGoal.id))
+      } catch (cause) {
+        if (cause instanceof ApiError && cause.code === 'TASKS_ALREADY_GENERATED') {
+          setTasks(await api.getTasks(savedGoal.id))
+        } else {
+          setError(cause instanceof Error ? cause.message : 'Could not generate tasks.')
+        }
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not save your goal.')
     } finally {
-      setSaving(false)
+      setBusy(false)
+      busyRef.current = false
     }
   }
+
+  function switchToManual() {
+    setTaskMode('manual')
+    setError(null)
+  }
+
+  function updateManualTask(id: string, field: 'title' | 'description', value: string) {
+    setManualTasks(current => current.map(task => task.id === id ? { ...task, [field]: value } : task))
+  }
+
+  function addManualTask() {
+    if (manualTasks.length < 7) {
+      setManualTasks(current => [...current, { id: genId(), title: '', description: '' }])
+    }
+  }
+
+  function removeManualTask(id: string) {
+    if (manualTasks.length > 1) setManualTasks(current => current.filter(task => task.id !== id))
+  }
+
+  async function saveManualTasks() {
+    if (!goal || busyRef.current) return
+    const input = manualTasks.map(({ title: taskTitle, description: taskDescription }) => ({
+      title: taskTitle.trim(),
+      description: taskDescription.trim(),
+    }))
+    if (input.some(task => !task.title || !task.description || task.title.length > 120 || task.description.length > 1000)) {
+      setError('Each task needs a title and description within the character limits.')
+      return
+    }
+    busyRef.current = true
+    setBusy(true)
+    setError(null)
+    try {
+      const savedTasks = await api.createManualTasks(goal.id, input)
+      onOpenGoal(goal, savedTasks)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not save tasks.')
+    } finally {
+      setBusy(false)
+      busyRef.current = false
+    }
+  }
+
+  const today = new Date()
+  const minDeadline = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
 
   return (
     <div className="min-h-screen flex flex-col">
-      {/* Step header */}
       <div className="bg-white border-b border-zinc-100 px-8 py-5 sticky top-0 z-10">
-        <div className="max-w-2xl mx-auto">
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-3">
-              <button onClick={() => setScreen('dashboard')} className="text-zinc-400 hover:text-zinc-700 p-1 rounded-lg hover:bg-zinc-100 transition-colors cursor-pointer">
-                {icons.chevLeft}
-              </button>
-              <div>
-                <p className="text-xs font-mono text-zinc-400">Step {step} of 5</p>
-                <p className="text-sm font-semibold text-zinc-900">{steps[step - 1]}</p>
-              </div>
+        <div className="max-w-2xl mx-auto flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <button onClick={() => setScreen('dashboard')} className="text-zinc-400 hover:text-zinc-700 p-1 rounded-lg hover:bg-zinc-100 transition-colors cursor-pointer">
+              {icons.chevLeft}
+            </button>
+            <div>
+              <p className="text-xs font-mono text-zinc-400">Step {step} of 2</p>
+              <p className="text-sm font-semibold text-zinc-900">{step === 1 ? 'Define your goal' : 'Your task plan'}</p>
             </div>
-            <div className="flex gap-1.5">
-              {steps.map((_, i) => (
-                <div key={i} className={cn('h-1.5 rounded-full transition-all duration-300', i < step ? 'w-8 bg-zinc-900' : 'w-4 bg-zinc-200')} />
-              ))}
-            </div>
+          </div>
+          <div className="flex gap-1.5">
+            {[1, 2].map(item => <div key={item} className={cn('h-1.5 rounded-full transition-all', item <= step ? 'w-8 bg-zinc-900' : 'w-4 bg-zinc-200')} />)}
           </div>
         </div>
       </div>
 
-      {/* Step content */}
       <div className="flex-1 px-8 py-8">
         <div className="max-w-2xl mx-auto">
-          {step === 1 && <StepGoal form={form} patch={patch} />}
-          {step === 2 && <StepPlan form={form} patch={patch} aiLoading={aiLoading} planError={planError} generateAI={generateAI} />}
-          {step === 3 && <StepStakes form={form} patch={patch} />}
-          {step === 4 && <StepPartner form={form} patch={patch} />}
-          {step === 5 && <StepReview form={form} />}
+          {step === 1 ? (
+            <div>
+              <h2 className="text-xl font-semibold text-zinc-900 mb-1">What's your goal?</h2>
+              <p className="text-zinc-500 text-sm mb-6">Set a clear outcome and a deadline. Wagerly will save your goal before generating its task plan.</p>
+              <div className="flex flex-col gap-5">
+                <div>
+                  <Label>Goal</Label>
+                  <Input value={title} onChange={setTitle} placeholder="e.g. Launch my app to 100 users" />
+                  <p className="text-xs text-zinc-400 mt-1.5">Up to 120 characters.</p>
+                </div>
+                <div>
+                  <Label>Description (optional)</Label>
+                  <textarea
+                    value={description}
+                    onChange={event => setDescription(event.target.value)}
+                    maxLength={2000}
+                    rows={4}
+                    placeholder="Add context that will help create useful tasks."
+                    className="w-full px-4 py-2.5 rounded-xl border border-zinc-200 text-sm text-zinc-900 placeholder-zinc-400 focus:outline-none focus:border-zinc-400 focus:ring-2 focus:ring-zinc-100 resize-none bg-white"
+                  />
+                </div>
+                <div>
+                  <Label>Deadline</Label>
+                  <Input type="date" value={deadline} onChange={setDeadline} className="w-full" />
+                  <p className="text-xs text-zinc-400 mt-1.5">The date is saved as a calendar date, without shifting across time zones.</p>
+                </div>
+                {title && deadline && (
+                  <Card className="p-4 border-indigo-100 bg-indigo-50/40">
+                    <p className="text-xs font-mono text-indigo-400 uppercase tracking-wider mb-1">Preview</p>
+                    <p className="text-zinc-900 font-medium">{title}</p>
+                    <p className="text-zinc-500 text-sm mt-1">Due {fmtDate(deadline)}</p>
+                  </Card>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div>
+              <div className="flex items-start justify-between gap-4 mb-6">
+                <div>
+                  <h2 className="text-xl font-semibold text-zinc-900 mb-1">Your next steps</h2>
+                  <p className="text-zinc-500 text-sm">{goal?.title}</p>
+                </div>
+                {tasks.length === 0 && (
+                  <Btn variant="secondary" onClick={() => goal && generateForGoal(goal)} disabled={busy}>
+                    {icons.sparkles} {busy ? 'Generating…' : 'Retry generation'}
+                  </Btn>
+                )}
+              </div>
+              <div className="grid grid-cols-2 gap-2 p-1 rounded-xl bg-zinc-100 mb-6">
+                <button
+                  type="button"
+                  onClick={() => setTaskMode('ai')}
+                  className={cn('rounded-lg px-3 py-2 text-sm font-medium transition-colors cursor-pointer', taskMode === 'ai' ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500')}
+                >
+                  {icons.sparkles} Generate with AI
+                </button>
+                <button
+                  type="button"
+                  onClick={switchToManual}
+                  className={cn('rounded-lg px-3 py-2 text-sm font-medium transition-colors cursor-pointer', taskMode === 'manual' ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500')}
+                >
+                  Enter Manually
+                </button>
+              </div>
+              {taskMode === 'manual' ? (
+                <div className="flex flex-col gap-3">
+                  {manualTasks.map((task, index) => (
+                    <Card key={task.id} className="p-4">
+                      <div className="flex items-start gap-3">
+                        <span className="w-7 h-7 rounded-full bg-indigo-50 text-indigo-700 text-xs flex items-center justify-center font-mono shrink-0">{index + 1}</span>
+                        <div className="flex-1 flex flex-col gap-2">
+                          <input
+                            value={task.title}
+                            maxLength={120}
+                            onChange={event => updateManualTask(task.id, 'title', event.target.value)}
+                            placeholder="Task title"
+                            aria-label={`Task ${index + 1} title`}
+                            className="w-full px-3 py-2 rounded-xl border border-zinc-200 text-sm text-zinc-900 placeholder-zinc-400 focus:outline-none focus:border-zinc-400 focus:ring-2 focus:ring-zinc-100"
+                          />
+                          <textarea
+                            value={task.description}
+                            maxLength={1000}
+                            onChange={event => updateManualTask(task.id, 'description', event.target.value)}
+                            placeholder="Describe what completing this step means"
+                            aria-label={`Task ${index + 1} description`}
+                            rows={3}
+                            className="w-full px-3 py-2 rounded-xl border border-zinc-200 text-sm text-zinc-900 placeholder-zinc-400 focus:outline-none focus:border-zinc-400 focus:ring-2 focus:ring-zinc-100 resize-none"
+                          />
+                        </div>
+                        <button type="button" onClick={() => removeManualTask(task.id)} disabled={manualTasks.length === 1} aria-label={`Delete task ${index + 1}`} className="p-2 rounded-lg hover:bg-red-50 text-zinc-400 hover:text-red-500 disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed">{icons.trash}</button>
+                      </div>
+                    </Card>
+                  ))}
+                  {manualTasks.length < 7 && (
+                    <button type="button" onClick={addManualTask} className="self-start flex items-center gap-2 text-sm text-zinc-500 hover:text-zinc-900 py-2 px-3 rounded-xl hover:bg-zinc-100 cursor-pointer">
+                      {icons.plus} Add Step
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <>
+              {busy && <p role="status" className="text-sm text-zinc-500">Generating tasks for your goal…</p>}
+              {error && !busy && (
+                <Btn variant="secondary" onClick={switchToManual}>Switch to manual task entry</Btn>
+              )}
+              {!busy && tasks.length === 0 && !error && (
+                <Card className="p-6 text-sm text-zinc-500">No tasks have been generated yet. You can retry without creating another goal.</Card>
+              )}
+              {tasks.length > 0 && (
+                <div className="flex flex-col gap-3">
+                  {tasks.map(task => (
+                    <Card key={task.id} className="p-5">
+                      <div className="flex gap-3">
+                        <span className="w-7 h-7 rounded-full bg-indigo-50 text-indigo-700 text-xs flex items-center justify-center font-mono shrink-0">{task.display_order}</span>
+                        <div>
+                          <h3 className="font-semibold text-zinc-900">{task.title}</h3>
+                          <p className="text-sm text-zinc-500 mt-1">{task.description}</p>
+                        </div>
+                      </div>
+                    </Card>
+                  ))}
+                </div>
+              )}
+                </>
+              )}
+            </div>
+          )}
+          {error && <p role="alert" className="mt-5 text-sm text-red-700">{error}</p>}
         </div>
       </div>
 
-      {/* Footer nav */}
       <div className="bg-white border-t border-zinc-100 px-8 py-4 sticky bottom-0">
-        <div className="max-w-2xl mx-auto flex justify-between">
-          {step > 1 ? (
-            <Btn variant="secondary" onClick={() => setStep(s => (s - 1) as CreateStep)}>
-              {icons.chevLeft} Back
-            </Btn>
-          ) : <div />}
-          {step < 5 ? (
-            <Btn onClick={() => setStep(s => (s + 1) as CreateStep)} disabled={!canNext[step]}>
-              Continue {icons.chevRight}
+        <div className="max-w-2xl mx-auto flex justify-between gap-3">
+          <Btn variant="secondary" onClick={() => setScreen('dashboard')}>Back to goals</Btn>
+          {step === 1 ? (
+            <Btn onClick={saveAndGenerate} disabled={title.trim().length < 1 || title.trim().length > 120 || !deadline || deadline < minDeadline || busy} size="lg">
+              {busy ? 'Saving goal…' : 'Save goal & generate tasks'} {icons.arrowRight}
             </Btn>
           ) : (
-            <Btn variant="success" onClick={commit} disabled={!canNext[step] || saving} size="lg">
-              {icons.check} {saving ? 'Saving…' : 'Commit to Wager'}
+            <Btn onClick={taskMode === 'manual' ? saveManualTasks : () => goal && onOpenGoal(goal, tasks)} disabled={taskMode === 'manual' ? busy : tasks.length === 0 || busy} size="lg">
+              {taskMode === 'manual' ? (busy ? 'Saving tasks…' : 'Save Tasks') : 'View saved goal'} {icons.arrowRight}
             </Btn>
           )}
         </div>
-        {saveError && <p role="alert" className="max-w-2xl mx-auto mt-3 text-right text-sm text-red-700">{saveError}</p>}
       </div>
     </div>
   )
@@ -1223,7 +1414,36 @@ function CompletionScreen({ wager, setScreen }: { wager: Wager; setScreen: (s: S
 
 // ─── History ──────────────────────────────────────────────────────────────────
 
-function HistoryScreen({ wagers, setScreen }: { wagers: Wager[]; setScreen: (s: Screen) => void }) {
+function HistoryScreen({ goals, setSelectedId, setScreen }: {
+  goals: GoalWithTasks[]
+  setSelectedId: (id: string) => void
+  setScreen: (s: Screen) => void
+}) {
+  return (
+    <div className="p-8 max-w-4xl">
+      <h1 className="text-2xl font-semibold text-zinc-900 mb-6">Goal history</h1>
+      {goals.length === 0 ? (
+        <Card className="p-8 text-center"><p className="text-zinc-400">No saved goals yet.</p></Card>
+      ) : (
+        <div className="flex flex-col gap-3">
+          {goals.map(goal => (
+            <Card key={goal.id} onClick={() => { setSelectedId(goal.id); setScreen('detail') }} className="p-5">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="font-semibold text-zinc-900">{goal.title}</p>
+                  <p className="text-xs text-zinc-400 font-mono mt-1">Created {fmtDate(goal.created_at)} · Due {fmtDate(goal.deadline)}</p>
+                </div>
+                <span className="text-xs text-zinc-500 font-mono">{goal.tasks.length} tasks</span>
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function LegacyHistoryScreen({ wagers, setScreen }: { wagers: Wager[]; setScreen: (s: Screen) => void }) {
   const completed = wagers.filter(w => w.status === 'completed')
   const missed = wagers.filter(w => w.status === 'missed')
   const all = [...completed, ...missed]
@@ -1300,13 +1520,24 @@ function HistoryScreen({ wagers, setScreen }: { wagers: Wager[]; setScreen: (s: 
 
 // ─── Landing & Login ──────────────────────────────────────────────────────────
 
-function LandingLogin({ onLogin }: { onLogin: () => void }) {
+function LandingLogin({
+  onLogin, onRegister, onErrorClear, error, message, loading,
+}: {
+  onLogin: (email: string, password: string) => Promise<void>
+  onRegister: (email: string, password: string) => Promise<void>
+  onErrorClear: () => void
+  error: string | null
+  message: string | null
+  loading: boolean
+}) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [isRegistering, setIsRegistering] = useState(false)
 
   function submit(event: React.FormEvent) {
     event.preventDefault()
-    onLogin()
+    if (isRegistering) void onRegister(email.trim(), password)
+    else void onLogin(email.trim(), password)
   }
 
   return (
@@ -1317,8 +1548,8 @@ function LandingLogin({ onLogin }: { onLogin: () => void }) {
           <span className="font-extrabold text-xl tracking-tight">Wagerly</span>
         </div>
         <div className="hidden sm:flex items-center gap-3 text-sm font-semibold">
-          <span className="px-3 py-1.5 rounded-full border border-[#161514]">Partner verified</span>
-          <span className="px-3 py-1.5 rounded-full bg-[#90cf8a] border border-[#161514]">Virtual stakes only</span>
+          <span className="px-3 py-1.5 rounded-full border border-[#161514]">Personal goals</span>
+          <span className="px-3 py-1.5 rounded-full bg-[#90cf8a] border border-[#161514]">AI task plans</span>
         </div>
       </header>
 
@@ -1337,14 +1568,14 @@ function LandingLogin({ onLogin }: { onLogin: () => void }) {
               <span className="block text-[#d42295]">Follow through.</span>
             </h1>
             <p className="mt-7 text-lg sm:text-xl leading-relaxed max-w-xl font-medium">
-              Turn ambitious goals into partner-verified commitments with clear milestones and virtual stakes that keep you moving.
+              Turn ambitious goals into clear plans with AI-generated next steps and deadlines that keep you moving.
             </p>
 
             <div className="mt-9 grid sm:grid-cols-3 gap-3 max-w-2xl">
               {[
                 ['01', 'Commit', 'Set a clear goal'],
-                ['02', 'Work', 'Hit each milestone'],
-                ['03', 'Verify', 'Finish with proof'],
+                ['02', 'Plan', 'Break it into tasks'],
+                ['03', 'Follow through', 'Work through your plan'],
               ].map(([number, title, copy], index) => (
                 <div
                   key={title}
@@ -1365,19 +1596,22 @@ function LandingLogin({ onLogin }: { onLogin: () => void }) {
             <div className="absolute -inset-4 bg-[#d42295] rounded-[2rem] rotate-3 border-2 border-[#161514]" />
             <div className="relative bg-[#90cf8a] border-2 border-[#161514] rounded-[2rem] p-6 sm:p-8 shadow-[8px_8px_0_#161514]">
               <div className="mb-8">
-                <p className="text-xs font-extrabold uppercase tracking-[0.18em] mb-2">Welcome back</p>
-                <h2 className="text-3xl font-extrabold tracking-tight">Sign in to your goals</h2>
-                <p className="text-sm font-medium mt-2">Your next milestone is waiting.</p>
+                <p className="text-xs font-extrabold uppercase tracking-[0.18em] mb-2">{isRegistering ? 'Start your journey' : 'Welcome back'}</p>
+                <h2 className="text-3xl font-extrabold tracking-tight">{isRegistering ? 'Create your account' : 'Sign in to your goals'}</h2>
+                <p className="text-sm font-medium mt-2">{isRegistering ? 'Create an account to save your goals.' : 'Your next milestone is waiting.'}</p>
               </div>
 
+              {error && <p role="alert" className="mb-5 rounded-xl border-2 border-red-800 bg-red-100 px-4 py-3 text-sm font-semibold text-red-900">{error}</p>}
+              {message && <p role="status" className="mb-5 rounded-xl border-2 border-[#161514] bg-[#e5f6ff] px-4 py-3 text-sm font-semibold">{message}</p>}
               <form onSubmit={submit} className="flex flex-col gap-5">
                 <div>
                   <label className="block text-sm font-bold mb-2" htmlFor="email">Email address</label>
                   <input
                     id="email"
                     type="email"
+                    required
                     value={email}
-                    onChange={event => setEmail(event.target.value)}
+                    onChange={event => { setEmail(event.target.value); onErrorClear() }}
                     placeholder="you@example.com"
                     className="w-full px-4 py-3.5 rounded-xl bg-[#e5f6ff] border-2 border-[#161514] placeholder:text-[#161514]/50 focus:outline-none focus:ring-4 focus:ring-[#d42295] font-semibold"
                   />
@@ -1385,32 +1619,37 @@ function LandingLogin({ onLogin }: { onLogin: () => void }) {
                 <div>
                   <div className="flex items-center justify-between mb-2">
                     <label className="text-sm font-bold" htmlFor="password">Password</label>
-                    <button type="button" className="text-xs font-bold underline underline-offset-4 cursor-pointer">Forgot password?</button>
+                    {!isRegistering && <span className="text-xs font-bold text-[#161514]/60">Password recovery unavailable</span>}
                   </div>
                   <input
                     id="password"
                     type="password"
+                    required
+                    minLength={isRegistering ? 8 : 1}
+                    maxLength={128}
                     value={password}
-                    onChange={event => setPassword(event.target.value)}
+                    onChange={event => { setPassword(event.target.value); onErrorClear() }}
                     placeholder="Enter your password"
                     className="w-full px-4 py-3.5 rounded-xl bg-[#e5f6ff] border-2 border-[#161514] placeholder:text-[#161514]/50 focus:outline-none focus:ring-4 focus:ring-[#d42295] font-semibold"
                   />
+                  {isRegistering && <p className="text-xs font-semibold mt-1.5">Use 8–128 characters.</p>}
                 </div>
                 <button
                   type="submit"
+                  disabled={loading}
                   className="mt-1 w-full flex items-center justify-center gap-2 rounded-xl bg-[#161514] text-[#e5f6ff] py-4 font-extrabold hover:bg-[#d42295] transition-colors cursor-pointer"
                 >
-                  Sign in to Wagerly {icons.arrowRight}
+                  {loading ? 'Please wait…' : isRegistering ? 'Create account' : 'Sign in to Wagerly'} {icons.arrowRight}
                 </button>
               </form>
 
               <div className="flex items-center gap-3 my-6">
                 <div className="h-px bg-[#161514] flex-1" />
-                <span className="text-xs font-bold uppercase">New here?</span>
+                <span className="text-xs font-bold uppercase">{isRegistering ? 'Already registered?' : 'New here?'}</span>
                 <div className="h-px bg-[#161514] flex-1" />
               </div>
-              <button onClick={onLogin} className="w-full py-3.5 rounded-xl border-2 border-[#161514] font-extrabold hover:bg-[#f46b16] transition-colors cursor-pointer">
-                Create a free account
+              <button type="button" onClick={() => { setIsRegistering(!isRegistering); onErrorClear() }} className="w-full py-3.5 rounded-xl border-2 border-[#161514] font-extrabold hover:bg-[#f46b16] transition-colors cursor-pointer">
+                {isRegistering ? 'Back to sign in' : 'Create a free account'}
               </button>
               <p className="text-center text-xs font-semibold mt-5">No real money. No gambling. Just meaningful follow-through.</p>
             </div>
@@ -1423,79 +1662,195 @@ function LandingLogin({ onLogin }: { onLogin: () => void }) {
 
 // ─── App Root ─────────────────────────────────────────────────────────────────
 
-export default function App() {
+export default function App({ api = defaultApiClient }: { api?: ApiClient } = {}) {
   const [screen, setScreen] = useState<Screen>('dashboard')
-  const [wagers, setWagers] = useState<Wager[]>([])
+  const [session, setSession] = useState<AuthSession | null>(null)
+  const [authReady, setAuthReady] = useState(false)
+  const [authBusy, setAuthBusy] = useState(false)
+  const [authError, setAuthError] = useState<string | null>(null)
+  const [authMessage, setAuthMessage] = useState<string | null>(null)
+  const [goals, setGoals] = useState<GoalWithTasks[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const authBootstrapStarted = useRef(false)
 
   useEffect(() => {
-    let active = true
-    getWagers()
-      .then(items => {
-        if (active) setWagers(items)
-      })
-      .catch(cause => {
-        if (active) setError(cause instanceof Error ? cause.message : 'Could not load commitments.')
-      })
-      .finally(() => {
-        if (active) setLoading(false)
-      })
-    return () => { active = false }
+    if (authBootstrapStarted.current) return
+    authBootstrapStarted.current = true
+
+    void (async () => {
+      const currentUrl = new URL(window.location.href)
+      const tokenHash = currentUrl.searchParams.get('token_hash')
+      const confirmationLink = currentUrl.searchParams.get('type') === 'signup'
+      if (tokenHash || confirmationLink) {
+        api.logout()
+        currentUrl.searchParams.delete('token_hash')
+        currentUrl.searchParams.delete('type')
+        window.history.replaceState({}, '', `${currentUrl.pathname}${currentUrl.search}${currentUrl.hash}`)
+        try {
+          if (!tokenHash) throw new Error('This email confirmation link is invalid or expired.')
+          const result = await api.verifyEmail(tokenHash)
+          if (!result.session) throw new Error('The confirmation response did not include a session.')
+          setSession(result.session)
+          setAuthMessage('Email confirmed. You are now signed in.')
+        } catch (cause) {
+          setAuthError(cause instanceof Error ? cause.message : 'This email confirmation link is invalid or expired.')
+        }
+      } else {
+        try {
+          setSession(await api.restoreSession())
+        } catch {
+          setAuthError('Your session could not be renewed. Please sign in again.')
+        }
+      }
+      setAuthReady(true)
+    })()
+  }, [api])
+
+  useEffect(() => {
+    function handleExpiredSession() {
+      setSession(null)
+      setGoals([])
+      setSelectedId(null)
+      setScreen('dashboard')
+      setLoading(false)
+      setError(null)
+      setAuthMessage(null)
+      setAuthError('Your session has expired. Please sign in again.')
+    }
+    window.addEventListener('wagerly:session-expired', handleExpiredSession)
+    return () => window.removeEventListener('wagerly:session-expired', handleExpiredSession)
   }, [])
 
-  const selectedWager = selectedId ? wagers.find(w => w.id === selectedId) : undefined
+  useEffect(() => {
+    if (!authReady) return
+    if (!session) {
+      setGoals([])
+      setLoading(false)
+      return
+    }
 
-  async function updateWager(updated: Wager) {
+    let active = true
+    setLoading(true)
     setError(null)
+    void api.listGoals()
+      .then(async items => Promise.all(items.map(async goal => ({
+        ...goal,
+        tasks: await api.getTasks(goal.id),
+      }))))
+      .then(items => { if (active) setGoals(items) })
+      .catch(cause => {
+        if (active) setError(cause instanceof Error ? cause.message : 'Could not load your goals.')
+      })
+      .finally(() => { if (active) setLoading(false) })
+    return () => { active = false }
+  }, [api, authReady, session])
+
+  async function handleLogin(email: string, password: string) {
+    setAuthBusy(true)
+    setAuthError(null)
+    setAuthMessage(null)
     try {
-      const saved = await persistWagerUpdate(updated)
-      setWagers(ws => ws.map(w => w.id === saved.id ? saved : w))
+      const result = await api.login(email, password)
+      if (!result.session) throw new Error('The login response did not include a session.')
+      setSession(result.session)
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Could not update this commitment.')
-      throw cause
+      setAuthError(cause instanceof Error ? cause.message : 'Could not sign in.')
+    } finally {
+      setAuthBusy(false)
     }
   }
 
-  async function addWager(w: Omit<Wager, 'id'>) {
-    setError(null)
+  async function handleRegister(email: string, password: string) {
+    setAuthBusy(true)
+    setAuthError(null)
+    setAuthMessage(null)
     try {
-      const created = await persistWager(w)
-      setWagers(ws => [created, ...ws])
-      setSelectedId(created.id)
+      const result = await api.register(email, password)
+      if (result.session) {
+        setSession(result.session)
+        setAuthMessage('Your account is ready. You are now signed in.')
+      } else {
+        api.logout()
+        setAuthMessage('Account created. Check your email, then open the confirmation link to sign in.')
+      }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Could not save this commitment.')
-      throw cause
+      setAuthError(cause instanceof Error ? cause.message : 'Could not create your account.')
+    } finally {
+      setAuthBusy(false)
     }
   }
 
+  function handleLogout() {
+    api.logout()
+    setSession(null)
+    setGoals([])
+    setSelectedId(null)
+    setScreen('dashboard')
+    setError(null)
+    setAuthMessage(null)
+    setAuthError(null)
+  }
+
+  function saveGoal(goal: Goal) {
+    setGoals(current => [
+      { ...goal, tasks: [] },
+      ...current.filter(item => item.id !== goal.id),
+    ])
+  }
+
+  function openGoal(goal: Goal, tasks: Task[]) {
+    setGoals(current => [
+      { ...goal, tasks },
+      ...current.filter(item => item.id !== goal.id),
+    ])
+    setSelectedId(goal.id)
+    setScreen('detail')
+  }
+
+  const selectedGoal = selectedId ? goals.find(goal => goal.id === selectedId) : undefined
   const showSidebar = screen !== 'completion'
+
+  if (!authReady) {
+    return <div className="min-h-screen flex items-center justify-center bg-[#e5f6ff] text-sm text-zinc-600" role="status">Restoring your session…</div>
+  }
+
+  if (!session) {
+    return (
+      <LandingLogin
+        onLogin={handleLogin}
+        onRegister={handleRegister}
+        onErrorClear={() => setAuthError(null)}
+        error={authError}
+        message={authMessage}
+        loading={authBusy}
+      />
+    )
+  }
 
   return (
     <div className="flex min-h-screen bg-[#e5f6ff] font-sans">
-      {showSidebar && <Sidebar screen={screen} setScreen={setScreen} />}
+      {showSidebar && <Sidebar screen={screen} setScreen={setScreen} email={session.user?.email ?? ''} onLogout={handleLogout} />}
       <main className="flex-1 overflow-y-auto">
-        {isLocalMode && <div className="border-b border-emerald-200 bg-emerald-50 px-6 py-2 text-xs text-emerald-800">Local mode · your data is saved in this browser</div>}
         {error && <div role="alert" className="mx-6 mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
         {loading ? (
-          <div className="p-8 text-sm text-zinc-500" role="status">Loading your commitments…</div>
+          <div className="p-8 text-sm text-zinc-500" role="status">Loading your goals…</div>
         ) : screen === 'dashboard' ? (
-          <Dashboard wagers={wagers} setScreen={setScreen} setSelectedId={setSelectedId} />
+          <Dashboard goals={goals} setScreen={setScreen} setSelectedId={setSelectedId} />
         ) : screen === 'create' ? (
-          <CreateWager setScreen={setScreen} onCommit={addWager} />
+          <CreateWager setScreen={setScreen} onGoalSaved={saveGoal} onOpenGoal={openGoal} api={api} />
         ) : screen === 'history' ? (
-          <HistoryScreen wagers={wagers} setScreen={setScreen} />
-        ) : selectedWager ? (
-          screen === 'active' ? (
-            <ActiveWager wager={selectedWager} setScreen={setScreen} updateWager={updateWager} />
-          ) : screen === 'verify' ? (
-            <PartnerVerify wager={selectedWager} setScreen={setScreen} updateWager={updateWager} />
-          ) : (
-            <CompletionScreen wager={selectedWager} setScreen={setScreen} />
-          )
+          <HistoryScreen goals={goals} setSelectedId={setSelectedId} setScreen={setScreen} />
+        ) : selectedGoal ? (
+          <GoalDetail
+            goal={selectedGoal}
+            setScreen={setScreen}
+            api={api}
+            onTasksChanged={tasks => setGoals(current => current.map(goal => goal.id === selectedGoal.id ? { ...goal, tasks } : goal))}
+          />
         ) : (
-          <Dashboard wagers={wagers} setScreen={setScreen} setSelectedId={setSelectedId} />
+          <Dashboard goals={goals} setScreen={setScreen} setSelectedId={setSelectedId} />
         )}
       </main>
     </div>

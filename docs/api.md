@@ -60,9 +60,25 @@ It returns `{ "user", "session" }` with the renewed access and refresh tokens.
 Supabase refresh tokens are single-use: replace **both** saved tokens with the
 returned session, and do not retry an already-used token. Missing or malformed
 input returns `400 VALIDATION_ERROR`; invalid, expired, or reused tokens return
-`401 INVALID_REFRESH_TOKEN`. The future frontend should call this endpoint when
-an access token expires, update its session from the response, and require a
-new login if refresh fails. Keep these tokens out of URLs and logs.
+`401 INVALID_REFRESH_TOKEN`. The frontend stores the returned session, refreshes
+proactively near access-token expiry, coordinates concurrent refresh requests,
+and retries an eligible protected request once after a `401`. If renewal fails,
+it clears the session and requires the user to sign in again. Passwords and
+tokens are never logged or placed in URLs.
+
+The connected frontend calls these authentication endpoints:
+
+- `POST /api/auth/register` with `{ "email", "password" }`. If confirmation is
+  required, it displays a message to check email and waits for the confirmation
+  link; protected screens stay hidden until a session is available.
+- Configure the Supabase confirmation redirect to the frontend origin with
+  `token_hash` and `type=signup` query parameters. The frontend removes those
+  values from the address bar and sends `{ "tokenHash" }` to
+  `POST /api/auth/verify-email`. A successful response signs the user in;
+  invalid or expired links show an error.
+- `POST /api/auth/login` with `{ "email", "password" }`.
+- `POST /api/auth/refresh` is called by the frontend when the session is near
+  expiry or a protected request returns `401`.
 
 Registration, login, email verification, and refresh are rate limited by
 client IP. Defaults are 5 registrations, 10 logins, 10 verification requests,
@@ -143,9 +159,11 @@ email, copy the `token_hash` from the confirmation link into
 tokens and created goal ID for subsequent requests. Do not export or share a
 collection after entering credentials or receiving session tokens.
 
-The sequence is an API example, not a claim that frontend integration has
-been tested. `frontend/src/` still contains placeholders; no running frontend,
-forms, or frontend API calls exist yet.
+The frontend uses these APIs for authentication and goal/task flows. Automated
+frontend integration tests send requests from the frontend API client to a
+running in-process Express server while mocking Supabase and Gemini. This does
+not verify live Supabase policies or live Gemini. The Sprint 1 interface does
+not implement partners, stakes, task completion, or verification.
 
 ## Optional live-service verification
 

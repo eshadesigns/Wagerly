@@ -6,6 +6,8 @@ export function createSupabaseClient(env, accessToken) {
     throw new HttpError(503, 'SUPABASE_NOT_CONFIGURED', 'Supabase is not configured on this server.');
   }
 
+  const url = env.SUPABASE_URL.replace(/\/rest\/v1\/?$/, '').replace(/\/+$/, '');
+
   const options = {
     auth: {
       autoRefreshToken: false,
@@ -20,5 +22,5 @@ export function createSupabaseClient(env, accessToken) {
     };
   }
 
-  return createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY, options);
+  return createClient(url, env.SUPABASE_ANON_KEY, options);
 }

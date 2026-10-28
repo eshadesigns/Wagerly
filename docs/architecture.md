@@ -9,24 +9,19 @@ task generation runs on the server. The schema and policies are defined in
 `supabase/migrations/20261026000000_sprint1_backend.sql`; API paths and JSON
 shapes are documented in [`api.md`](./api.md).
 
-The React/TypeScript frontend under `frontend/` implements the supplied
-design's dashboard, goal creation, milestone tracking, partner verification,
-and history screens. It starts without demo data and stores records in browser
-local storage by default. It does not yet authenticate users or integrate with
-the Sprint 1 backend.
-
-The frontend's optional `VITE_API_BASE_URL` adapter currently describes a
-separate `/api/wagers` REST shape. It is not compatible with the implemented
-`/api/goals` Sprint 1 contract. Do not configure it to point at the Sprint 1
-backend until the client is updated to handle authentication, goal/task
-mapping, and backend capability differences.
+The React/TypeScript frontend under `frontend/` connects its login,
+registration, email-confirmation, session-renewal, goal, and task-plan flows to
+the Sprint 1 API. It maps the backend's `Goal` and `Task` records directly and
+does not persist goal data in browser storage. The browser stores only the
+authentication session needed for reload and refresh. Partner, stake,
+verification, task-completion, and manual task-editing actions remain outside
+the connected Sprint 1 flow.
 
 ## Separation of responsibilities
 
-- **Frontend (`frontend/`):** Owns presentation and browser-local prototype
-  behavior. Keep backend requests behind `frontend/src/api.ts`, and shared
-  frontend models in `frontend/src/types.ts`. Never place server-only secrets
-  in browser code.
+- **Frontend (`frontend/`):** Owns presentation and calls the JSON API through
+  `frontend/src/api.ts`. Keep API record/authentication models in
+  `frontend/src/types.ts`. Never place server-only secrets in browser code.
 - **Backend (`backend/`):** Express API for authentication, goals, and task
   generation. It validates inputs and access tokens and applies ownership rules.
 - **Persistence and authentication:** Supabase Auth and Postgres. RLS policies
@@ -37,10 +32,12 @@ mapping, and backend capability differences.
 ## Directory responsibilities
 
 - `frontend/src/main.tsx`: React application entry point.
-- `frontend/src/App.tsx`: designed frontend screens and workflows.
-- `frontend/src/api.ts`: browser-local persistence and the not-yet-integrated
-  frontend REST adapter.
-- `frontend/src/types.ts`: frontend commitment and milestone models.
+- `frontend/src/App.tsx`: authentication gate and goal/task workflows.
+- `frontend/src/api.ts`: authenticated API client, session storage, and
+  coordinated session refresh.
+- `frontend/src/types.ts`: API-aligned `Goal`, `Task`, and auth models.
+- `frontend/tests/`: frontend-to-Express integration tests with external
+  Supabase and Gemini behavior mocked.
 - `backend/src/index.js`: Express server startup, routes, authentication
   middleware, CORS, and generation rate limit.
 - `backend/src/auth.js`, `goals.js`, and `tasks.js`: auth and goal/task logic.
@@ -60,16 +57,14 @@ mapping, and backend capability differences.
 
 See [`api.md`](./api.md) for request and response contracts. Partner
 invitations, pacts, task completion/verification, progress reporting, and
-editing a generated plan are later-release work. The current frontend design
-includes some of these future workflows, so they cannot yet be persisted by
-the Sprint 1 backend.
+editing a generated plan are later-release work and are not offered as
+persisted Sprint 1 actions in the connected flow.
 
-## Remaining work
+## Verification and setup
 
-- Integrate frontend auth with the backend register, login, verification, and
-  refresh routes.
-- Map the frontend goal and milestone models to the Sprint 1 goal/task API;
-  document and handle features that the API does not yet support.
+- The frontend test suite runs the frontend API client against an in-process
+  Express server with Supabase and Gemini mocked. It does not verify live
+  database policies or Gemini service behavior.
 - Configure the Supabase project, email confirmation template and local
   redirect URLs, then apply the SQL migration.
 - Supply a Gemini API key and choose an available model in `GEMINI_MODEL` for

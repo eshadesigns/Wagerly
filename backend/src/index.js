@@ -9,7 +9,7 @@ import { generateTasks } from './ai.js';
 import { createSupabaseClient } from './database.js';
 import { HttpError } from './errors.js';
 import { createGoal, getGoal, listGoals, validateGoalId } from './goals.js';
-import { listTasks, saveGeneratedTasks } from './tasks.js';
+import { listTasks, saveGeneratedTasks, validateTaskInput } from './tasks.js';
 
 function createAuthMiddleware(env, createClient) {
   return async function authenticate(req, _res, next) {
@@ -176,6 +176,19 @@ export function createApp({
       throw new HttpError(404, 'GOAL_NOT_FOUND', 'Goal not found.');
     }
     res.json({ tasks: await listTasks(req.supabase, req.params.goalId) });
+  });
+
+  app.post('/api/goals/:goalId/tasks', authenticate, async (req, res) => {
+    const goalId = validateGoalId(req.params.goalId);
+    const goal = await getGoal(req.supabase, goalId);
+    if (!goal || goal.user_id !== req.user.id) {
+      throw new HttpError(404, 'GOAL_NOT_FOUND', 'Goal not found.');
+    }
+    if ((await listTasks(req.supabase, goalId)).length > 0) {
+      throw new HttpError(409, 'TASKS_ALREADY_GENERATED', 'Tasks have already been generated for this goal.');
+    }
+    const tasks = await saveGeneratedTasks(req.supabase, goalId, validateTaskInput(req.body));
+    res.status(201).json({ tasks });
   });
 
   const generationLimiter = rateLimit({
