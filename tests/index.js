@@ -214,7 +214,9 @@ async function createHarness(options = {}) {
     env: {
       SUPABASE_URL: 'http://supabase.test',
       SUPABASE_ANON_KEY: 'test-anon-key',
-      GEMINI_API_KEY: 'test-gemini-key',
+      NAVIGATOR_TOOLKIT_API_KEY: 'test-navigator-key',
+      NAVIGATOR_API_BASE_URL: 'https://navigator.test/v1',
+      NAVIGATOR_MODEL: 'gpt-oss-120b',
       FRONTEND_ORIGIN: 'http://localhost:5173',
       AUTH_REGISTER_RATE_LIMIT: '100',
       AUTH_LOGIN_RATE_LIMIT: '100',
@@ -223,7 +225,7 @@ async function createHarness(options = {}) {
     },
     createClient: database.createClient,
     generateGoalTasks: options.generateGoalTasks ?? (async () => sampleTasks),
-    logger: () => {},
+    logger: options.logger ?? (() => {}),
     authRateLimits: options.authRateLimits,
   });
   const server = app.listen(0);
@@ -519,6 +521,15 @@ describe('Wagerly API', () => {
     assert.equal(generated.status, 201);
     assert.equal(generated.body.tasks.length, 3);
     assert.deepEqual(generated.body.tasks.map((task) => task.display_order), [1, 2, 3]);
+    assert.ok(generated.body.tasks.every((task) => task.goal_id === created.body.goal.id));
+    assert.deepEqual(Object.keys(generated.body.tasks[0]).sort(), [
+      'created_at',
+      'description',
+      'display_order',
+      'goal_id',
+      'id',
+      'title',
+    ]);
 
     const retrieved = await harness.request(`/api/goals/${created.body.goal.id}/tasks`, {
       token: account.token,
@@ -597,11 +608,11 @@ describe('Wagerly API', () => {
     assert.equal(generationCalls, 1);
   });
 
-  it('returns Gemini failures without saving placeholder tasks', async () => {
+  it('returns generation failures without saving partial tasks', async () => {
     await harness.close();
     harness = await createHarness({
       generateGoalTasks: async () => {
-        throw new HttpError(504, 'AI_TIMEOUT', 'Gemini took too long to respond. Please try again.');
+        throw new HttpError(504, 'AI_TIMEOUT', 'Task generation took too long. Please try again.');
       },
     });
     const account = await registerAndConfirm(harness, 'gemini-failure@example.com');
@@ -621,9 +632,107 @@ describe('Wagerly API', () => {
     });
     assert.deepEqual(retrieved.body.tasks, []);
   });
+
+  it('logs safe NaviGator and task-output diagnostics without changing client errors', async () => {
+    const logEntries = [];
+    let responseKind = 'provider';
+    await harness.close();
+    harness = await createHarness({
+      logger: (message, details) => logEntries.push({ message, details }),
+      generateGoalTasks: (goal, env) => generateTasks(goal, env, () => ({
+        chat: {
+          completions: {
+            async create() {
+              if (responseKind === 'provider') {
+                const error = new Error([
+                  `Request failed with key ${env.NAVIGATOR_TOOLKIT_API_KEY}`,
+                  `for ${goal.title}: ${goal.description}`,
+                  'Authorization: Bearer sensitive-header-value',
+                ].join(' '));
+                error.status = 502;
+                error.error = {
+                  code: 'navigator_failure',
+                  message: [
+                    `Request failed with key ${env.NAVIGATOR_TOOLKIT_API_KEY}`,
+                    `for ${goal.title}: ${goal.description}`,
+                    'Authorization: Bearer sensitive-header-value',
+                  ].join(' '),
+                };
+                throw error;
+              }
+              return {
+                choices: [{
+                  finish_reason: 'stop',
+                  message: {
+                    content: responseKind === 'invalid_output'
+                      ? JSON.stringify({
+                        tasks: [],
+                        raw_model_output: 'untrusted-model-output',
+                      })
+                      : 'untrusted-model-output',
+                  },
+                }],
+              };
+            },
+          },
+        },
+      })),
+    });
+
+    const account = await registerAndConfirm(harness, 'generation-diagnostics@example.com');
+    const createGoal = async (title, description) => {
+      const response = await harness.request('/api/goals', {
+        method: 'POST',
+        token: account.token,
+        body: { title, description, deadline: '2026-12-31' },
+      });
+      assert.equal(response.status, 201);
+      return response.body.goal;
+    };
+    const generateFor = async (goal) => harness.request(`/api/goals/${goal.id}/tasks/generate`, {
+      method: 'POST',
+      token: account.token,
+    });
+
+    const providerGoal = await createGoal('Private provider goal', 'Private provider description');
+    const providerResponse = await generateFor(providerGoal);
+    assert.equal(providerResponse.status, 502);
+    assert.equal(providerResponse.body.error.message, 'Task generation is temporarily unavailable.');
+    assert.equal(logEntries[0].message, 'Task generation NaviGator API error');
+    assert.equal(logEntries[0].details.httpStatus, 502);
+    assert.equal(logEntries[0].details.providerCode, 'navigator_failure');
+    assert.match(logEntries[0].details.message, /\[REDACTED\]/);
+    for (const privateValue of [
+      'test-navigator-key',
+      'Private provider goal',
+      'Private provider description',
+      'sensitive-header-value',
+    ]) {
+      assert.equal(logEntries[0].details.message.includes(privateValue), false);
+    }
+
+    responseKind = 'invalid_output';
+    const outputGoal = await createGoal('Another private goal', 'Another private description');
+    const outputResponse = await generateFor(outputGoal);
+    assert.equal(outputResponse.status, 502);
+    assert.equal(outputResponse.body.error.code, 'AI_INVALID_OUTPUT');
+    assert.equal(logEntries[1].message, 'Task generation output processing failed');
+    assert.deepEqual(logEntries[1].details, { step: 'validate_task_list' });
+    assert.equal(JSON.stringify(logEntries).includes('untrusted-model-output'), false);
+
+    responseKind = 'parse_failure';
+    const parseGoal = await createGoal('Parse failure goal', 'Parse failure description');
+    const parseResponse = await generateFor(parseGoal);
+    assert.equal(parseResponse.status, 502);
+    assert.equal(parseResponse.body.error.code, 'AI_INVALID_OUTPUT');
+    assert.equal(logEntries[2].message, 'Task generation output processing failed');
+    assert.deepEqual(logEntries[2].details, { step: 'parse_json' });
+    assert.equal(JSON.stringify(logEntries).includes('untrusted-model-output'), false);
+    assert.equal(harness.database.tasks.length, 0);
+  });
 });
 
-describe('Gemini integration', () => {
+describe('NaviGator AI Toolkit integration', () => {
   const goal = {
     title: 'Build a garden',
     description: 'Start a small vegetable garden.',
@@ -632,51 +741,93 @@ describe('Gemini integration', () => {
 
   it('uses the configured model and validates structured task output', async () => {
     let requestOptions;
-    let requestOptions2;
+    let requestConfig;
     let clientOptions;
     const tasks = await generateTasks(goal, {
-      GEMINI_API_KEY: 'test-key',
-      GEMINI_MODEL: 'test-model',
+      NAVIGATOR_TOOLKIT_API_KEY: 'test-key',
+      NAVIGATOR_API_BASE_URL: 'https://navigator.test/v1',
+      NAVIGATOR_MODEL: 'test-model',
     }, (options) => {
       clientOptions = options;
       return {
-        interactions: {
-          async create(options, sdkOptions) {
-            requestOptions = options;
-            requestOptions2 = sdkOptions;
-            return { status: 'completed', output_text: JSON.stringify({ tasks: sampleTasks }) };
+        chat: {
+          completions: {
+            async create(options, config) {
+              requestOptions = options;
+              requestConfig = config;
+              return {
+                choices: [{
+                  finish_reason: 'stop',
+                  message: { content: JSON.stringify({ tasks: sampleTasks }), refusal: null },
+                }],
+              };
+            },
           },
         },
       };
     });
 
     assert.equal(requestOptions.model, 'test-model');
-    assert.equal(requestOptions.response_format.mime_type, 'application/json');
-    assert.equal(requestOptions.response_format.schema.properties.tasks.minItems, 3);
-    assert.equal(requestOptions.response_format.schema.properties.tasks.maxItems, 7);
-    assert.match(requestOptions.input, /Build a garden/);
-    assert.equal(requestOptions.store, false);
-    assert.equal(tasks.length, 3);
+    assert.equal(requestOptions.response_format.type, 'json_schema');
+    assert.equal(requestOptions.response_format.json_schema.strict, true);
+    assert.equal(requestOptions.response_format.json_schema.schema.additionalProperties, false);
+    assert.match(requestOptions.messages[0].content, /3 to 7 distinct/);
+    assert.match(requestOptions.messages[0].content, /action verb/);
+    assert.match(requestOptions.messages[0].content, /deadline/);
+    assert.equal(requestOptions.messages[0].role, 'system');
+    assert.equal(requestOptions.messages[1].role, 'user');
+    assert.deepEqual(JSON.parse(requestOptions.messages[1].content), goal);
+    assert.deepEqual(tasks, sampleTasks);
     assert.equal(clientOptions.apiKey, 'test-key');
-    assert.equal(requestOptions2.timeout_ms, 30000);
-    assert.deepEqual(requestOptions2.retries, { strategy: 'none' });
+    assert.equal(clientOptions.baseURL, 'https://navigator.test/v1');
+    assert.equal(requestConfig.timeout, 30000);
+    assert.equal(requestConfig.maxRetries, 0);
   });
 
-  it('maps Gemini quota, timeout, blocked, invalid JSON and invalid schema responses', async () => {
+  it('uses NaviGator defaults when optional URL and model are omitted', async () => {
+    let clientOptions;
+    let requestOptions;
+    await generateTasks(goal, {
+      NAVIGATOR_TOOLKIT_API_KEY: 'test-key',
+    }, (options) => {
+      clientOptions = options;
+      return {
+        chat: {
+          completions: {
+            async create(options) {
+              requestOptions = options;
+              return {
+                choices: [{
+                  finish_reason: 'stop',
+                  message: { content: JSON.stringify({ tasks: sampleTasks }) },
+                }],
+              };
+            },
+          },
+        },
+      };
+    });
+    assert.equal(clientOptions.baseURL, 'https://api.navigator.ai.ufl.edu/v1');
+    assert.equal(requestOptions.model, 'gpt-oss-120b');
+  });
+
+  it('maps NaviGator quota, timeout, refusal, invalid JSON and invalid schema responses', async () => {
     async function runWith(responseOrError) {
-      return generateTasks(goal, { GEMINI_API_KEY: 'test-key' }, () => ({
-        interactions: {
-          async create() {
-            if (responseOrError instanceof Error) {
-              throw responseOrError;
-            }
-            return responseOrError;
+      return generateTasks(goal, { NAVIGATOR_TOOLKIT_API_KEY: 'test-key' }, () => ({
+        chat: {
+          completions: {
+            async create() {
+              if (responseOrError instanceof Error) {
+                throw responseOrError;
+              }
+              return responseOrError;
+            },
           },
         },
       }));
     }
 
-    await assert.rejects(runWith(Object.assign(new Error('quota'), { statusCode: 429 })), {
+    await assert.rejects(runWith(Object.assign(new Error('quota'), { status: 429 })), {
       code: 'AI_QUOTA_EXCEEDED',
       status: 503,
     });
@@ -685,32 +836,54 @@ describe('Gemini integration', () => {
       status: 504,
     });
     await assert.rejects(runWith({
-      status: 'failed',
-      errors: [{ code: 'safety_blocked', message: 'Response blocked by safety policy.' }],
+      choices: [{
+        finish_reason: 'stop',
+        message: { content: null, refusal: 'Cannot help.' },
+      }],
     }), {
       code: 'AI_BLOCKED',
       status: 502,
     });
-    await assert.rejects(runWith({ status: 'failed', errors: [{ code: 'internal_error' }] }), {
-      code: 'AI_UNAVAILABLE',
-      status: 502,
-    });
-    await assert.rejects(runWith({ status: 'completed', output_text: 'not json' }), {
+    await assert.rejects(runWith({
+      choices: [{ finish_reason: 'length', message: { content: null } }],
+    }), {
       code: 'AI_INVALID_OUTPUT',
       status: 502,
     });
     await assert.rejects(runWith({
-      status: 'completed',
-      output_text: JSON.stringify({ tasks: sampleTasks.slice(0, 2) }),
+      choices: [{ finish_reason: 'stop', message: { content: 'not json' } }],
+    }), {
+      code: 'AI_INVALID_OUTPUT',
+      status: 502,
+    });
+    await assert.rejects(runWith({
+      choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ tasks: sampleTasks.slice(0, 2) }) } }],
+    }), {
+      code: 'AI_INVALID_OUTPUT',
+      status: 502,
+    });
+    await assert.rejects(runWith({
+      choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({
+        tasks: [sampleTasks[0], { ...sampleTasks[0], title: sampleTasks[0].title.toLowerCase() }, sampleTasks[2]],
+      }) } }],
     }), {
       code: 'AI_INVALID_OUTPUT',
       status: 502,
     });
   });
 
-  it('fails explicitly when the Gemini API key is missing', async () => {
+  it('rejects blank goals before calling NaviGator', async () => {
+    await assert.rejects(generateTasks({ title: '  ' }, { NAVIGATOR_TOOLKIT_API_KEY: 'test-key' }, () => {
+      throw new Error('The NaviGator client should not be called for a blank goal.');
+    }), {
+      code: 'VALIDATION_ERROR',
+      status: 400,
+    });
+  });
+
+  it('fails explicitly when NaviGator configuration is missing', async () => {
     await assert.rejects(generateTasks(goal, {}, () => {
-      throw new Error('The Gemini client should not be constructed without a key.');
+      throw new Error('The NaviGator client should not be constructed without a key.');
     }), {
       code: 'AI_NOT_CONFIGURED',
       status: 503,

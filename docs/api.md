@@ -115,17 +115,20 @@ An invalid goal UUID returns `400`; a missing or another user's goal returns
 
 ### Generated tasks
 
-`POST /api/goals/:goalId/tasks/generate` needs no request body. Gemini receives
-the goal title, description, and deadline. It must return 3-7 unique task
+`POST /api/goals/:goalId/tasks/generate` needs no request body. NaviGator
+receives the goal title, description, and deadline as user input, separate
+from the generation instructions. It must return 3-7 unique task
 objects with non-empty `title` (up to 120 characters) and `description` (up
-to 1000 characters). Tasks are saved in one database transaction and returned
+to 1000 characters). The backend uses NaviGator AI Toolkit's Chat Completions
+API and validates its JSON output before saving. Tasks are saved in one
+database transaction and returned
 as `201 { "tasks": [...] }`, ordered by `display_order`. Repeating generation
 returns `409 TASKS_ALREADY_GENERATED`; concurrent requests are serialized in
 Postgres so only one batch can be saved. Generation is limited to five
 requests per signed-in user per hour per backend process.
 
 Task retrieval returns `{ "tasks": [...] }`; a goal owned by another user
-returns `404`. Gemini errors never produce placeholder tasks: timeout is
+returns `404`. NaviGator errors never produce placeholder tasks: timeout is
 `504 AI_TIMEOUT`, quota is `503 AI_QUOTA_EXCEEDED`, blocked/invalid output is
 `502 AI_BLOCKED` or `502 AI_INVALID_OUTPUT`, and missing server configuration
 is `503 AI_NOT_CONFIGURED`.
@@ -161,9 +164,9 @@ collection after entering credentials or receiving session tokens.
 
 The frontend uses these APIs for authentication and goal/task flows. Automated
 frontend integration tests send requests from the frontend API client to a
-running in-process Express server while mocking Supabase and Gemini. This does
-not verify live Supabase policies or live Gemini. The Sprint 1 interface does
-not implement partners, stakes, task completion, or verification.
+running in-process Express server while mocking Supabase and NaviGator. This
+does not verify live Supabase policies or live NaviGator. The Sprint 1
+interface does not implement partners, stakes, task completion, or verification.
 
 ## Optional live-service verification
 
@@ -177,11 +180,12 @@ deletes only those exact account IDs and email addresses at teardown (their
 goals/tasks cascade); it does not scan or delete other project data. Without
 all required values and explicit cleanup opt-in, the suite skips.
 
-`npm run test:live:gemini` sends a real request to the model configured in
-`GEMINI_MODEL` (default `gemini-3.8-flash`) and skips unless `GEMINI_API_KEY`
+`npm run test:live:navigator` sends a real request to the model configured in
+`NAVIGATOR_MODEL` (default `gpt-oss-120b`) at the
+`NAVIGATOR_API_BASE_URL` endpoint and skips unless `NAVIGATOR_TOOLKIT_API_KEY`
 is set. The test validates returned shape only; it is not part of `npm test`.
-The backend uses the official `@google/genai` SDK Interactions API with a
-structured JSON schema, `store: false`, a 30-second request timeout, and no
-automatic retries. Mocked tests verify the model/configuration arguments,
-JSON parsing, timeout and quota error mapping. No live Gemini or Supabase
-result should be inferred from those mocked tests.
+The backend uses the official `openai` JavaScript SDK Chat Completions API with
+JSON-schema output, a 30-second request timeout, and no automatic retries.
+Mocked tests verify model/configuration arguments, task validation, and
+timeout/quota error mapping. No live NaviGator or Supabase result should be
+inferred from those mocked tests.

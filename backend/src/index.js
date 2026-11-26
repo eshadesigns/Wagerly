@@ -218,7 +218,24 @@ export function createApp({
       throw new HttpError(409, 'TASKS_ALREADY_GENERATED', 'Tasks have already been generated for this goal.');
     }
 
-    const generatedTasks = await generateGoalTasks(goal, env);
+    let generatedTasks;
+    try {
+      generatedTasks = await generateGoalTasks(goal, env);
+    } catch (error) {
+      const diagnostic = error?.generationDiagnostic;
+      if (diagnostic?.kind === 'provider_api_error') {
+        logger('Task generation NaviGator API error', {
+          httpStatus: diagnostic.httpStatus,
+          providerCode: diagnostic.providerCode,
+          message: diagnostic.message,
+        });
+      } else if (diagnostic?.kind === 'task_output_failure') {
+        logger('Task generation output processing failed', {
+          step: diagnostic.step,
+        });
+      }
+      throw error;
+    }
     const tasks = await saveGeneratedTasks(req.supabase, goalId, generatedTasks);
     res.status(201).json({ tasks });
   });

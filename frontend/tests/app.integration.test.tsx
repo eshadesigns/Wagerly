@@ -183,7 +183,7 @@ function createTestBackend() {
     generateGoalTasks: async () => {
       if (failNextGeneration) {
         failNextGeneration = false
-        throw new HttpError(504, 'AI_TIMEOUT', 'Gemini took too long to respond. Please try again.')
+        throw new HttpError(504, 'AI_TIMEOUT', 'Task generation took too long. Please try again.')
       }
       return [
         { title: 'Define the first milestone', description: 'Write down the measurable first outcome.' },
@@ -295,7 +295,7 @@ describe('frontend and Express integration', () => {
     fireEvent.change(document.querySelector('input[type="date"]')!, { target: { value: '2027-02-20' } })
     await user.click(screen.getByRole('button', { name: /save goal & generate tasks/i }))
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('Gemini took too long to respond.')
+    expect(await screen.findByRole('alert')).toHaveTextContent('Task generation took too long.')
     expect(await screen.findByRole('heading', { name: 'Your next steps' })).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: /retry generation/i }))
     expect(await screen.findByText('Define the first milestone')).toBeInTheDocument()

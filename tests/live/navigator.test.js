@@ -3,12 +3,12 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { generateTasks } from '../../backend/src/ai.js';
 
-const skipReason = process.env.GEMINI_API_KEY
+const skipReason = process.env.NAVIGATOR_TOOLKIT_API_KEY
   ? false
-  : 'Set GEMINI_API_KEY to run the live Gemini smoke test.';
+  : 'Set NAVIGATOR_TOOLKIT_API_KEY to run the live NaviGator smoke test.';
 
-describe('Live Gemini smoke test', { skip: skipReason }, () => {
-  it('generates a valid task plan using the configured Gemini model', { timeout: 45_000 }, async () => {
+describe('Live NaviGator AI Toolkit smoke test', { skip: skipReason }, () => {
+  it('generates a valid task plan using the configured NaviGator model', { timeout: 45_000 }, async () => {
     const deadline = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
     const tasks = await generateTasks({
       title: 'Prepare a short daily reading habit',

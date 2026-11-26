@@ -28,6 +28,6 @@ with the Sprint 1 API until authentication and goal/task mapping are tested.
 
 Run `npm run build` from `frontend/` to type-check and build the client. Run
 `npm test` from the repository root for the Node built-in backend test suite.
-Live Supabase and Gemini checks require team-provided credentials and are
+Live Supabase and NaviGator checks require team-provided credentials and are
 separate opt-in commands. Document the exact checks performed in each pull
 request.

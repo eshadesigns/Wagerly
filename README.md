@@ -4,7 +4,7 @@
 
 Wagerly helps people turn goals into actionable plans and build accountability.
 The Sprint 1 app connects its React frontend to an Express backend for Supabase
-authentication, personal goals, and Gemini-generated task plans. Partners,
+authentication, personal goals, and NaviGator-generated task plans. Partners,
 pacts, shared verification, task completion, stakes, and payments are not
 implemented in Sprint 1.
 
@@ -14,7 +14,8 @@ implemented in Sprint 1.
 - Backend: Node.js ES modules and Express.
 - Authentication and database: Supabase Auth and Postgres, with row-level
   security for user-owned goals and tasks.
-- AI: Google's `@google/genai` SDK, called only from the backend.
+- AI: the official `openai` JavaScript SDK connected to UF's NaviGator AI
+  Toolkit, called only from the backend.
 
 ## Run the frontend locally
 
@@ -48,7 +49,7 @@ production frontend with `npm run build` and `npm run preview`.
 ## Run the backend locally
 
 Run this in a separate VS Code terminal from the frontend. The backend requires
-a configured Supabase project. Gemini credentials are needed for live AI
+a configured Supabase project. NaviGator credentials are needed for live AI
 generation.
 
 ```sh
@@ -62,8 +63,10 @@ Copy-Item .env.example .env
 ```
 
 Set `FRONTEND_ORIGIN=http://localhost:5173` and fill in the required
-`SUPABASE_URL` and `SUPABASE_ANON_KEY` values. Set `GEMINI_API_KEY` for live
-task generation; `GEMINI_MODEL` and `PORT` are optional. Then apply
+`SUPABASE_URL` and `SUPABASE_ANON_KEY` values. Set `NAVIGATOR_TOOLKIT_API_KEY`
+for live task generation. The URL and model default to
+`https://api.navigator.ai.ufl.edu/v1` and `gpt-oss-120b`. Keep the NaviGator
+key only in the backend `.env` file. Then apply
 [`supabase/migrations/20261026000000_sprint1_backend.sql`](./supabase/migrations/20261026000000_sprint1_backend.sql)
 to the shared Supabase project using its SQL Editor or migration tooling.
 Each teammate creates their own local `.env` and `frontend/.env`; share neither
@@ -84,8 +87,8 @@ and opt-in live tests.
 
 Frontend authentication, goals, and generated tasks use the documented Sprint 1
 backend endpoints. Automated integration tests run the actual Express app with
-Supabase and Gemini mocked; they do not verify live Supabase policies, live
-Gemini, or deployment behavior. The frontend intentionally does not expose
+Supabase and NaviGator mocked; they do not verify live Supabase policies, live
+NaviGator, or deployment behavior. The frontend intentionally does not expose
 partner, stake, task-completion, or verification actions as working features.
 Never expose server-only secrets in `VITE_` variables.
 
