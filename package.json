@@ -9,7 +9,7 @@
   "scripts": {
     "start": "node backend/src/index.js",
     "dev": "node --watch backend/src/index.js",
-    "test": "node --test tests/index.js",
+    "test": "node --test tests/index.js tests/taskValidation.test.js",
     "test:integration": "node --test tests/integration/supabase.test.js",
     "test:live:gemini": "node --test tests/live/gemini.test.js"
   },
