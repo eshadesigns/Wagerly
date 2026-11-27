@@ -206,6 +206,51 @@ describe('frontend and Express integration', () => {
   let client: ReturnType<typeof createApiClient>
   let backend: ReturnType<typeof createTestBackend>
   let baseUrl: string
+  
+  // Set up a goal where the user needs to enter their own tasks.
+  async function openManualTaskEntry() {
+    await client.register('manual-ui@example.com', 'correct-horse-battery')
+    await client.verifyEmail('test-confirmation-token')
+
+    backend.failNextTaskGeneration()
+
+    const user = userEvent.setup()
+    render(<App api={client} />)
+
+    await screen.findByRole('heading', { name: 'Your goals' })
+    await user.click(screen.getByRole('button', { name: 'New Goal' }))
+
+    await user.type(
+      screen.getByPlaceholderText('e.g. Launch my app to 100 users'),
+      'Prepare for my SWE final'
+    )
+
+    await user.type(
+      screen.getByPlaceholderText('Add context that will help create useful tasks.'),
+      'Review my notes and practice the topics I need more help with.'
+    )
+
+    const deadline = new Date()
+    deadline.setDate(deadline.getDate() + 30)
+
+    const date = `${deadline.getFullYear()}-${String(deadline.getMonth() + 1).padStart(2, '0')}-${String(deadline.getDate()).padStart(2, '0')}`
+
+    fireEvent.change(document.querySelector('input[type="date"]')!, {
+      target: { value: date },
+    })
+
+    await user.click(screen.getByRole('button', {
+      name: /save goal & generate tasks/i,
+    }))
+
+    await screen.findByRole('alert')
+
+    await user.click(screen.getByRole('button', {
+      name: 'Enter Manually',
+    }))
+
+    return user
+  }
 
   beforeEach(async () => {
     window.localStorage.clear()
@@ -324,4 +369,363 @@ describe('frontend and Express integration', () => {
     expect(window.location.search).toBe('')
     expect(client.getSession()?.user?.email).toBe('signup-ui@example.com')
   })
+
+  // Check that manually entered tasks are saved in the correct order.
+  it('saves manual tasks and retrieves them for the correct goal', async () => {
+    await client.register('manual@example.com', 'correct-horse-battery')
+    await client.verifyEmail('test-confirmation-token')
+
+    const goal = await client.createGoal({
+      title: 'Finish my SWE group project',
+      description: 'Complete my assigned work before the final presentation.',
+      deadline: '2027-01-15',
+    })
+
+    const manualTasks = [
+      {
+        title: 'Finish my assigned code',
+        description: 'Complete the remaining parts of my implementation.',
+      },
+      {
+        title: 'Run the test cases',
+        description: 'Make sure the existing and new tests pass.',
+      },
+      {
+        title: 'Prepare the presentation',
+        description: 'Update the slides with our final project results.',
+      },
+    ]
+
+    const savedTasks = await client.createManualTasks(goal.id, manualTasks)
+
+    expect(savedTasks).toHaveLength(3)
+    expect(savedTasks.map(task => task.title))
+      .toEqual(manualTasks.map(task => task.title))
+    expect(savedTasks.map(task => task.display_order)).toEqual([1, 2, 3])
+    expect(savedTasks.every(task => task.goal_id === goal.id)).toBe(true)
+    expect(await client.getTasks(goal.id)).toEqual(savedTasks)
+  })
+
+  // A user should be able to save a goal with just one task.
+  it('allows a goal to have one manual task', async () => {
+    await client.register('single@example.com', 'correct-horse-battery')
+    await client.verifyEmail('test-confirmation-token')
+
+    const goal = await client.createGoal({
+      title: 'Submit my assignment',
+      description: 'Finish and submit my assignment on time.',
+      deadline: '2027-01-15',
+    })
+
+    const savedTasks = await client.createManualTasks(goal.id, [
+      {
+        title: 'Submit the assignment',
+        description: 'Review my work and upload the final document.',
+      },
+    ])
+
+    expect(savedTasks).toHaveLength(1)
+    expect(savedTasks[0].display_order).toBe(1)
+    expect(await client.getTasks(goal.id)).toEqual(savedTasks)
+  })
+
+  // Check the maximum number of tasks allowed for one goal.
+  it('allows a goal to have seven manual tasks', async () => {
+    await client.register('maximum@example.com', 'correct-horse-battery')
+    await client.verifyEmail('test-confirmation-token')
+
+    const goal = await client.createGoal({
+      title: 'Prepare for finals week',
+      description: 'Study a different topic during each study session.',
+      deadline: '2027-01-15',
+    })
+
+    const manualTasks = Array.from({ length: 7 }, (_, index) => ({
+      title: `Study session ${index + 1}`,
+      description: `Review the material for topic ${index + 1}.`,
+    }))
+
+    const savedTasks = await client.createManualTasks(goal.id, manualTasks)
+
+    expect(savedTasks).toHaveLength(7)
+    expect(savedTasks.map(task => task.display_order))
+      .toEqual([1, 2, 3, 4, 5, 6, 7])
+    expect(await client.getTasks(goal.id)).toEqual(savedTasks)
+  })
+
+  // Invalid tasks should not be saved to the goal.
+  it('rejects manual tasks with missing information', async () => {
+    await client.register('invalid@example.com', 'correct-horse-battery')
+    await client.verifyEmail('test-confirmation-token')
+
+    const goal = await client.createGoal({
+      title: 'Create a study schedule',
+      description: 'Plan out my study sessions for the week.',
+      deadline: '2027-01-15',
+    })
+
+    await expect(client.createManualTasks(goal.id, [
+      {
+        title: '',
+        description: 'Review my class notes.',
+      },
+    ])).rejects.toMatchObject({
+      status: 400,
+      code: 'VALIDATION_ERROR',
+    })
+
+    await expect(client.createManualTasks(goal.id, [
+      {
+        title: 'Review notes',
+        description: '   ',
+      },
+    ])).rejects.toMatchObject({
+      status: 400,
+      code: 'VALIDATION_ERROR',
+    })
+
+    expect(await client.getTasks(goal.id)).toEqual([])
+  })
+
+  // Saving another set of tasks should not overwrite the original tasks.
+  it('prevents saving a second set of tasks for the same goal', async () => {
+    await client.register('duplicate@example.com', 'correct-horse-battery')
+    await client.verifyEmail('test-confirmation-token')
+
+    const goal = await client.createGoal({
+      title: 'Stay on top of my assignments',
+      description: 'Complete my assignments before their deadlines.',
+      deadline: '2027-01-15',
+    })
+
+    const originalTasks = await client.createManualTasks(goal.id, [
+      {
+        title: 'Check upcoming deadlines',
+        description: 'Make a list of assignments that are due.',
+      },
+    ])
+
+    await expect(client.createManualTasks(goal.id, [
+      {
+        title: 'Create another task',
+        description: 'Try saving a second set of tasks.',
+      },
+    ])).rejects.toMatchObject({
+      status: 409,
+      code: 'TASKS_ALREADY_GENERATED',
+    })
+
+    expect(await client.getTasks(goal.id)).toEqual(originalTasks)
+  })
+
+  // Users should not be able to access or change someone else's tasks.
+  it('prevents another user from accessing or adding tasks to a goal', async () => {
+    await client.register('owner@example.com', 'correct-horse-battery')
+    await client.verifyEmail('test-confirmation-token')
+
+    const goal = await client.createGoal({
+      title: 'Improve my coding skills',
+      description: 'Practice coding throughout the semester.',
+      deadline: '2027-01-15',
+    })
+
+    const originalTasks = await client.createManualTasks(goal.id, [
+      {
+        title: 'Practice coding',
+        description: 'Complete a few practice problems.',
+      },
+    ])
+
+    client.logout()
+
+    await client.register('other@example.com', 'correct-horse-battery')
+    await client.verifyEmail('test-confirmation-token')
+
+    await expect(client.getTasks(goal.id)).rejects.toMatchObject({
+      status: 404,
+      code: 'GOAL_NOT_FOUND',
+    })
+
+    await expect(client.createManualTasks(goal.id, [
+      {
+        title: 'Add an unauthorized task',
+        description: 'Try adding a task to another user’s goal.',
+      },
+    ])).rejects.toMatchObject({
+      status: 404,
+      code: 'GOAL_NOT_FOUND',
+    })
+
+    client.logout()
+
+    await client.login('owner@example.com', 'correct-horse-battery')
+    expect(await client.getTasks(goal.id)).toEqual(originalTasks)
+  })
+
+  // Make sure the user can enter tasks manually if AI generation fails.
+  it('switches from AI generation to manual task entry', async () => {
+    await openManualTaskEntry()
+
+    expect(screen.getByLabelText('Task 1 title')).toBeInTheDocument()
+    expect(screen.getByLabelText('Task 1 description')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /save tasks/i }))
+      .toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  // The user should be able to change their task before saving it.
+  it('allows the user to enter and edit a manual task', async () => {
+    const user = await openManualTaskEntry()
+
+    const title = screen.getByLabelText('Task 1 title')
+    const description = screen.getByLabelText('Task 1 description')
+
+    await user.type(title, 'Review notes')
+    await user.type(description, 'Read through my class notes.')
+
+    await user.clear(title)
+    await user.type(title, 'Review SWE modules')
+
+    await user.clear(description)
+    await user.type(description, 'Review the modules covered on the final.')
+
+    expect(title).toHaveValue('Review SWE modules')
+    expect(description).toHaveValue(
+      'Review the modules covered on the final.'
+    )
+  })
+
+  // Check that the user can add more than one task to their goal.
+  it('allows the user to add multiple manual tasks', async () => {
+    const user = await openManualTaskEntry()
+
+    await user.click(screen.getByRole('button', { name: /add step/i }))
+    await user.click(screen.getByRole('button', { name: /add step/i }))
+
+    expect(screen.getAllByLabelText(/^Task \d+ title$/)).toHaveLength(3)
+    expect(screen.getAllByLabelText(/^Task \d+ description$/))
+      .toHaveLength(3)
+  })
+
+  // Removing one task should not remove the other tasks.
+  it('removes an unwanted task and keeps the remaining task', async () => {
+    const user = await openManualTaskEntry()
+
+    await user.type(
+      screen.getByLabelText('Task 1 title'),
+      'Review lecture notes'
+    )
+
+    await user.click(screen.getByRole('button', { name: /add step/i }))
+
+    await user.type(
+      screen.getByLabelText('Task 2 title'),
+      'Review old assignments'
+    )
+
+    await user.click(screen.getByRole('button', {
+      name: 'Delete task 2',
+    }))
+
+    expect(screen.queryByLabelText('Task 2 title'))
+      .not.toBeInTheDocument()
+
+    expect(screen.getByLabelText('Task 1 title'))
+      .toHaveValue('Review lecture notes')
+  })
+
+  // A goal needs at least one task.
+  it('prevents the user from deleting the only remaining task', async () => {
+    await openManualTaskEntry()
+
+    expect(screen.getByRole('button', { name: 'Delete task 1' }))
+      .toBeDisabled()
+
+    expect(screen.getAllByLabelText(/^Task \d+ title$/)).toHaveLength(1)
+  })
+
+  // The user should not be able to add more than seven tasks.
+  it('limits manual task entry to seven tasks', async () => {
+    const user = await openManualTaskEntry()
+
+    for (let i = 0; i < 6; i++) {
+      await user.click(screen.getByRole('button', { name: /add step/i }))
+    }
+
+    expect(screen.getAllByLabelText(/^Task \d+ title$/)).toHaveLength(7)
+
+    expect(screen.queryByRole('button', { name: /add step/i }))
+      .not.toBeInTheDocument()
+  })
+
+  // Make sure incomplete tasks are not saved.
+  it('shows an error when required task information is missing', async () => {
+    const user = await openManualTaskEntry()
+
+    await user.type(
+      screen.getByLabelText('Task 1 title'),
+      'Review practice questions'
+    )
+
+    await user.click(screen.getByRole('button', {
+      name: /save tasks/i,
+    }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Each task needs a title and description within the character limits.'
+    )
+
+    const goals = await client.listGoals()
+    expect(goals).toHaveLength(1)
+    expect(await client.getTasks(goals[0].id)).toEqual([])
+  })
+
+  // Check the full process of creating and saving tasks through the UI.
+  it('saves manual tasks and displays them on the saved goal page', async () => {
+    const user = await openManualTaskEntry()
+
+    await user.type(
+      screen.getByLabelText('Task 1 title'),
+      'Review SWE modules'
+    )
+
+    await user.type(
+      screen.getByLabelText('Task 1 description'),
+      'Go through the notes from each module.'
+    )
+
+    await user.click(screen.getByRole('button', { name: /add step/i }))
+
+    await user.type(
+      screen.getByLabelText('Task 2 title'),
+      'Complete practice questions'
+    )
+
+    await user.type(
+      screen.getByLabelText('Task 2 description'),
+      'Practice the topics I need more help with.'
+    )
+
+    await user.click(screen.getByRole('button', {
+      name: /save tasks/i,
+    }))
+
+    expect(await screen.findByRole('heading', {
+      name: 'Prepare for my SWE final',
+    })).toBeInTheDocument()
+
+    expect(screen.getByText('Review SWE modules')).toBeInTheDocument()
+    expect(screen.getByText('Complete practice questions'))
+      .toBeInTheDocument()
+
+    const goals = await client.listGoals()
+    const savedTasks = await client.getTasks(goals[0].id)
+
+    expect(savedTasks).toHaveLength(2)
+    expect(savedTasks.map(task => task.title)).toEqual([
+      'Review SWE modules',
+      'Complete practice questions',
+    ])
+  })
+
 })
