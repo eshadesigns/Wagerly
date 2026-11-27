@@ -9,7 +9,7 @@
   "scripts": {
     "start": "node backend/src/index.js",
     "dev": "node --watch backend/src/index.js",
-    "test": "node --test tests/index.js",
+    "test": "node --test tests/index.js tests/sprint2.js",
     "test:integration": "node --test tests/integration/supabase.test.js",
     "test:live:navigator": "node --test tests/live/navigator.test.js"
   },
