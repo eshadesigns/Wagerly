@@ -189,3 +189,75 @@ JSON-schema output, a 30-second request timeout, and no automatic retries.
 Mocked tests verify model/configuration arguments, task validation, and
 timeout/quota error mapping. No live NaviGator or Supabase result should be
 inferred from those mocked tests.
+
+________________________________________
+
+# Sprint 2 API
+
+These are the new routes for partners, pacts, task completion, and progress. Every route needs the `Authorization: Bearer <access_token>` header. If something goes wrong you get back `{ "error": { "code", "message" } }`.
+
+## Routes
+
+Tasks
+- `PATCH /api/tasks/:taskId` - the owner edits a task. Send `title`, `description`, or both. Only works while the task is incomplete.
+- `POST /api/tasks/:taskId/complete` - the owner marks a task done. No body needed.
+- `POST /api/tasks/:taskId/review` - the partner approves or rejects a task. Send `{ "decision": "approve" }` or `{ "decision": "reject" }`.
+- `GET /api/reviews/pending` - the partner sees the tasks waiting for their approval.
+
+Partners
+- `POST /api/goals/:goalId/partner` - the owner invites a partner. Send `{ "email": "friend@example.com" }`.
+- `GET /api/invitations` - lists the invitations you sent and received.
+- `POST /api/invitations/:id/accept` - the invited person accepts.
+- `POST /api/invitations/:id/decline` - the invited person declines.
+
+Pacts
+- `POST /api/goals/:goalId/pact` - the owner creates a pact (see below).
+- `GET /api/goals/:goalId/pact` - the owner or partner views the pact.
+
+Progress and outcomes
+- `GET /api/dashboard` - all the goals you own or verify, with task counts and percent done.
+- `GET /api/goals/:goalId/progress` - progress for one goal.
+- `GET /api/goals/:goalId/outcome` - the final result of a goal (completed or missed).
+- `GET /api/goals/outcomes?status=completed` (or `missed`) - history of finished goals.
+
+Other changes from Sprint 1: goals and tasks now have a `status`, `GET /api/goals` only returns goals you own, and generating tasks is owner-only.
+
+## Pacts
+
+You need an accepted partner before you can make a pact. Send one of these (not both):
+- `{ "stakeType": "virtual_amount", "virtualAmount": 25.5 }` - the amount has to be above 0, up to 1,000,000, with at most 2 decimals.
+- `{ "stakeType": "custom_consequence", "consequence": "Buy the team lunch" }` - 1 to 500 characters.
+
+No real money is ever used. Each goal can only have one pact.
+
+## How statuses work
+
+- Task: `incomplete`, then `pending_verification`, then `verified`. If the partner rejects it, it goes back to `incomplete`. If the goal has no accepted partner, finishing a task makes it `verified` right away.
+- Goal: `active`, `completed`, or `missed`.
+- Dashboard `progress_status`: `on_track`, `at_risk` (deadline is within 3 days), `completed`, or `missed`.
+- Invitation: `pending`, `accepted`, or `declined`.
+- Pact: `active`, `honored` (goal completed), or `forfeited` (goal missed).
+
+## How outcomes work
+
+- Only verified tasks count toward `completion_percent`.
+- A goal is completed when every task is verified, and the pact becomes honored.
+- A goal is missed when the deadline passes and a task is still incomplete (or there are no tasks), and the pact becomes forfeited.
+- Tasks waiting on the partner keep the goal active.
+- Once a goal is completed or missed, it can't be changed (you get `409 GOAL_CLOSED`).
+
+## Errors
+
+- 400 `VALIDATION_ERROR` - bad body, id, or query value
+- 400 `CANNOT_INVITE_SELF` - you invited your own email
+- 401 `AUTHENTICATION_REQUIRED` or `INVALID_ACCESS_TOKEN` - missing or bad token
+- 403 `NOT_ASSIGNED_PARTNER` - you're not this goal's accepted partner
+- 404 `GOAL_NOT_FOUND`, `TASK_NOT_FOUND`, `INVITATION_NOT_FOUND`, `PACT_NOT_FOUND`, `PARTNER_NOT_FOUND` - missing, or you can't see it
+- 409 `GOAL_CLOSED` - goal is already completed or missed
+- 409 `TASK_LOCKED` - only incomplete tasks can be edited
+- 409 `TASK_NOT_PENDING` - task isn't waiting for approval
+- 409 `INVITATION_EXISTS` - goal already has a pending or accepted partner
+- 409 `INVITATION_ALREADY_RESPONDED` - invitation was already answered
+- 409 `PARTNER_REQUIRED` - you need an accepted partner before making a pact
+- 409 `PACT_EXISTS` - goal already has a pact
+- 503 `DATABASE_UNAVAILABLE` - unexpected database problem

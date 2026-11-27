@@ -1,5 +1,7 @@
 import { HttpError, databaseUnavailable } from './errors.js';
 
+const GOAL_COLUMNS = 'id, user_id, title, description, deadline, status, resolved_at, created_at';
+
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const DATETIME_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2})$/i;
@@ -61,7 +63,7 @@ export async function createGoal(client, userId, body) {
   const { data, error } = await client
     .from('goals')
     .insert({ ...input, user_id: userId })
-    .select('id, user_id, title, description, deadline, created_at')
+    .select(GOAL_COLUMNS)
     .single();
 
   if (error || !data) {
@@ -70,10 +72,11 @@ export async function createGoal(client, userId, body) {
   return data;
 }
 
-export async function listGoals(client) {
+export async function listGoals(client, userId) {
   const { data, error } = await client
     .from('goals')
-    .select('id, user_id, title, description, deadline, created_at')
+    .select(GOAL_COLUMNS)
+    .eq('user_id', userId)
     .order('created_at', { ascending: false });
 
   if (error) {
@@ -86,7 +89,7 @@ export async function getGoal(client, goalId) {
   validateGoalId(goalId);
   const { data, error } = await client
     .from('goals')
-    .select('id, user_id, title, description, deadline, created_at')
+    .select(GOAL_COLUMNS)
     .eq('id', goalId)
     .maybeSingle();
 

@@ -9,7 +9,12 @@ import { generateTasks } from './ai.js';
 import { createSupabaseClient } from './database.js';
 import { HttpError } from './errors.js';
 import { createGoal, getGoal, listGoals, validateGoalId } from './goals.js';
-import { listTasks, saveGeneratedTasks, validateTaskInput } from './tasks.js';
+import { listTasks, saveGeneratedTasks, validateTaskInput, updateTask, completeTask, reviewTask } from './tasks.js';
+import {
+  inviteAccountabilityPartner, listInvitations, respondToInvitation, listPendingReviews, validateReview, validateId,
+} from './accountability.js';
+import { createPact, getPact } from './pacts.js';
+import { getDashboard, getGoalProgress, getGoalOutcome, listOutcomes } from './progress.js';
 
 function createAuthMiddleware(env, createClient) {
   return async function authenticate(req, _res, next) {
@@ -118,7 +123,7 @@ export function createApp({
       }
       return callback(new HttpError(403, 'ORIGIN_NOT_ALLOWED', 'This origin is not allowed.'));
     },
-    methods: ['GET', 'POST', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PATCH', 'OPTIONS'],
     allowedHeaders: ['Authorization', 'Content-Type'],
   }));
   app.use(express.json({ limit: '32kb' }));
@@ -152,12 +157,25 @@ export function createApp({
   });
 
   app.get('/api/goals', authenticate, async (req, res) => {
-    res.json({ goals: await listGoals(req.supabase) });
+    res.json({ goals: await listGoals(req.supabase, req.user.id) });
   });
 
   app.post('/api/goals', authenticate, async (req, res) => {
     const goal = await createGoal(req.supabase, req.user.id, req.body);
     res.status(201).json({ goal });
+  });
+
+  // ---- Progress, dashboard and outcomes (these literal paths must come before /api/goals/:goalId) ----
+  app.get('/api/dashboard', authenticate, async (req, res) => {
+    res.json({ goals: await getDashboard(req.supabase, req.user.id) });
+  });
+
+  app.get('/api/goals/outcomes', authenticate, async (req, res) => {
+    const { status } = req.query;
+    if (status !== undefined && status !== 'completed' && status !== 'missed') {
+      throw new HttpError(400, 'VALIDATION_ERROR', 'Status filter must be "completed" or "missed".');
+    }
+    res.json({ outcomes: await listOutcomes(req.supabase, req.user.id, status) });
   });
 
   app.get('/api/goals/:goalId', authenticate, async (req, res) => {
@@ -191,6 +209,69 @@ export function createApp({
     res.status(201).json({ tasks });
   });
 
+  app.get('/api/goals/:goalId/progress', authenticate, async (req, res) => {
+    const progress = await getGoalProgress(req.supabase, req.user.id, validateGoalId(req.params.goalId));
+    if (!progress) {
+      throw new HttpError(404, 'GOAL_NOT_FOUND', 'Goal not found.');
+    }
+    res.json({ progress });
+  });
+
+  app.get('/api/goals/:goalId/outcome', authenticate, async (req, res) => {
+    const outcome = await getGoalOutcome(req.supabase, req.user.id, validateGoalId(req.params.goalId));
+    if (!outcome) {
+      throw new HttpError(404, 'GOAL_NOT_FOUND', 'Goal not found.');
+    }
+    res.json({ outcome });
+  });
+
+  // ---- Task editing, completion and verification ----
+  app.patch('/api/tasks/:taskId', authenticate, async (req, res) => {
+    res.json({ task: await updateTask(req.supabase, req.user.id, req.params.taskId, req.body) });
+  });
+
+  app.post('/api/tasks/:taskId/complete', authenticate, async (req, res) => {
+    res.json({ task: await completeTask(req.supabase, req.params.taskId) });
+  });
+
+  app.post('/api/tasks/:taskId/review', authenticate, async (req, res) => {
+    validateId(req.params.taskId, 'Task ID');
+    const approve = validateReview(req.body);
+    res.json({ task: await reviewTask(req.supabase, req.params.taskId, approve) });
+  });
+
+  app.get('/api/reviews/pending', authenticate, async (req, res) => {
+    res.json({ tasks: await listPendingReviews(req.supabase, req.user.id) });
+  });
+
+  // ---- Accountability partners ----
+  app.post('/api/goals/:goalId/partner', authenticate, async (req, res) => {
+    const invitation = await inviteAccountabilityPartner(req.supabase, req.params.goalId, req.body);
+    res.status(201).json({ invitation });
+  });
+
+  app.get('/api/invitations', authenticate, async (req, res) => {
+    res.json({ invitations: await listInvitations(req.supabase, req.user.id) });
+  });
+
+  app.post('/api/invitations/:invitationId/accept', authenticate, async (req, res) => {
+    res.json({ invitation: await respondToInvitation(req.supabase, req.user.id, req.params.invitationId, true) });
+  });
+
+  app.post('/api/invitations/:invitationId/decline', authenticate, async (req, res) => {
+    res.json({ invitation: await respondToInvitation(req.supabase, req.user.id, req.params.invitationId, false) });
+  });
+
+  // ---- Pacts ----
+  app.post('/api/goals/:goalId/pact', authenticate, async (req, res) => {
+    res.status(201).json({ pact: await createPact(req.supabase, req.user.id, req.params.goalId, req.body) });
+  });
+
+  app.get('/api/goals/:goalId/pact', authenticate, async (req, res) => {
+    res.json({ pact: await getPact(req.supabase, req.params.goalId) });
+  });
+
+
   const generationLimiter = rateLimit({
     windowMs: 60 * 60 * 1000,
     limit: 5,
@@ -210,7 +291,7 @@ export function createApp({
   app.post('/api/goals/:goalId/tasks/generate', authenticate, generationLimiter, async (req, res) => {
     const goalId = validateGoalId(req.params.goalId);
     const goal = await getGoal(req.supabase, goalId);
-    if (!goal) {
+    if (!goal || goal.user_id !== req.user.id) {
       throw new HttpError(404, 'GOAL_NOT_FOUND', 'Goal not found.');
     }
 
