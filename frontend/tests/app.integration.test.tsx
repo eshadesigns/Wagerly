@@ -252,6 +252,47 @@ describe('frontend and Express integration', () => {
     return user
   }
 
+  // Create a few saved goals to use when testing the dashboard.
+  async function createDashboardGoals() {
+    await client.register('dashboard@example.com', 'correct-horse-battery')
+    await client.verifyEmail('test-confirmation-token')
+
+    const deadline = new Date()
+    deadline.setDate(deadline.getDate() + 30)
+
+    const studyGoal = await client.createGoal({
+      title: 'Prepare for my SWE final',
+      description: 'Review the modules and practice for the final.',
+      deadline: deadline.toISOString(),
+    })
+
+    const projectGoal = await client.createGoal({
+      title: 'Finish my group project',
+      description: 'Complete my assigned work before the presentation.',
+      deadline: deadline.toISOString(),
+    })
+
+    await client.createManualTasks(studyGoal.id, [
+      {
+        title: 'Review lecture notes',
+        description: 'Go through the notes from each module.',
+      },
+      {
+        title: 'Complete practice questions',
+        description: 'Practice the topics covered in class.',
+      },
+    ])
+
+    await client.createManualTasks(projectGoal.id, [
+      {
+        title: 'Finish the presentation',
+        description: 'Update the slides with our final results.',
+      },
+    ])
+
+    return { studyGoal, projectGoal }
+  }
+
   beforeEach(async () => {
     window.localStorage.clear()
     backend = createTestBackend()
@@ -726,6 +767,213 @@ describe('frontend and Express integration', () => {
       'Review SWE modules',
       'Complete practice questions',
     ])
+  })
+
+  // Check what the dashboard looks like for a new user.
+  it('shows an empty dashboard when the user has no goals', async () => {
+    await client.register('empty@example.com', 'correct-horse-battery')
+    await client.verifyEmail('test-confirmation-token')
+
+    render(<App api={client} />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Nothing here yet'))
+        .toBeInTheDocument()
+
+      expect(screen.getByText(
+        'Create a goal and generate actionable tasks to get started.'
+      )).toBeInTheDocument()
+
+      expect(screen.getByRole('button', { name: 'Create a goal' }))
+        .toBeInTheDocument()
+    })
+
+    expect(await client.listGoals()).toEqual([])
+  })
+
+  // Make sure all of the user's saved goals appear on the dashboard.
+  it('displays multiple saved goals on the dashboard', async () => {
+    const { studyGoal, projectGoal } = await createDashboardGoals()
+
+    render(<App api={client} />)
+
+    expect(await screen.findByRole('heading', {
+      name: studyGoal.title,
+    })).toBeInTheDocument()
+
+    expect(screen.getByRole('heading', {
+      name: projectGoal.title,
+    })).toBeInTheDocument()
+
+    expect(screen.queryByText('Nothing here yet'))
+      .not.toBeInTheDocument()
+  })
+
+  // Check that the dashboard shows the correct goal information.
+  it('displays goal descriptions, deadlines, and task counts', async () => {
+    const { studyGoal, projectGoal } = await createDashboardGoals()
+
+    render(<App api={client} />)
+
+    await screen.findByRole('heading', { name: studyGoal.title })
+
+    expect(screen.getByText(studyGoal.description))
+      .toBeInTheDocument()
+
+    expect(screen.getByText(projectGoal.description))
+      .toBeInTheDocument()
+
+    expect(screen.getByText('2 tasks')).toBeInTheDocument()
+    expect(screen.getByText('1 task')).toBeInTheDocument()
+    expect(screen.getAllByText(/^Due /)).toHaveLength(2)
+  })
+
+  // The user should be able to open a goal from the dashboard.
+  it('opens the selected goal and displays its details', async () => {
+    const { studyGoal } = await createDashboardGoals()
+    const user = userEvent.setup()
+
+    render(<App api={client} />)
+
+    await user.click(await screen.findByRole('heading', {
+      name: studyGoal.title,
+    }))
+
+    expect(await screen.findByRole('heading', {
+      level: 1,
+      name: studyGoal.title,
+    })).toBeInTheDocument()
+
+    expect(screen.getByText(studyGoal.description))
+      .toBeInTheDocument()
+
+    expect(screen.getByRole('heading', { name: 'Tasks' }))
+      .toBeInTheDocument()
+  })
+
+  // Tasks from different goals should not get mixed up.
+  it('displays only the tasks that belong to the selected goal', async () => {
+    const { studyGoal, projectGoal } = await createDashboardGoals()
+    const user = userEvent.setup()
+
+    render(<App api={client} />)
+
+    await user.click(await screen.findByRole('heading', {
+      name: studyGoal.title,
+    }))
+
+    expect(screen.getByText('Review lecture notes'))
+      .toBeInTheDocument()
+
+    expect(screen.getByText('Complete practice questions'))
+      .toBeInTheDocument()
+
+    expect(screen.queryByText('Finish the presentation'))
+      .not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', {
+      name: 'Back to goals',
+    }))
+
+    await user.click(await screen.findByRole('heading', {
+      name: projectGoal.title,
+    }))
+
+    expect(screen.getByText('Finish the presentation'))
+      .toBeInTheDocument()
+
+    expect(screen.queryByText('Review lecture notes'))
+      .not.toBeInTheDocument()
+  })
+
+  // Going back to the dashboard should not remove any saved goals.
+  it('returns to the dashboard without losing saved goals', async () => {
+    const { studyGoal, projectGoal } = await createDashboardGoals()
+    const user = userEvent.setup()
+
+    render(<App api={client} />)
+
+    await user.click(await screen.findByRole('heading', {
+      name: studyGoal.title,
+    }))
+
+    await user.click(screen.getByRole('button', {
+      name: 'Back to goals',
+    }))
+
+    expect(await screen.findByRole('heading', {
+      name: 'Your goals',
+    })).toBeInTheDocument()
+
+    expect(screen.getByRole('heading', {
+      name: studyGoal.title,
+    })).toBeInTheDocument()
+
+    expect(screen.getByRole('heading', {
+      name: projectGoal.title,
+    })).toBeInTheDocument()
+  })
+
+  // Make sure saved goals and tasks are loaded again when the app reopens.
+  it('keeps saved goals and tasks after reopening the application', async () => {
+    const { studyGoal, projectGoal } = await createDashboardGoals()
+
+    const firstRender = render(<App api={client} />)
+
+    await screen.findByRole('heading', { name: studyGoal.title })
+
+    firstRender.unmount()
+
+    const reopenedClient = createApiClient({
+      baseUrl,
+      storage: window.localStorage,
+    })
+
+    render(<App api={reopenedClient} />)
+
+    expect(await screen.findByRole('heading', {
+      name: studyGoal.title,
+    })).toBeInTheDocument()
+
+    expect(screen.getByRole('heading', {
+      name: projectGoal.title,
+    })).toBeInTheDocument()
+
+    expect(screen.getByText('2 tasks')).toBeInTheDocument()
+    expect(screen.getByText('1 task')).toBeInTheDocument()
+  })
+
+  // A user should only see the goals saved under their own account.
+  it('does not display goals belonging to another user', async () => {
+    const { studyGoal, projectGoal } = await createDashboardGoals()
+
+    client.logout()
+
+    await client.register('other-dashboard@example.com', 'correct-horse-battery')
+    await client.verifyEmail('test-confirmation-token')
+
+    const deadline = new Date()
+    deadline.setDate(deadline.getDate() + 30)
+
+    const personalGoal = await client.createGoal({
+      title: 'Build a consistent workout routine',
+      description: 'Make time to work out throughout the week.',
+      deadline: deadline.toISOString(),
+    })
+
+    render(<App api={client} />)
+
+    expect(await screen.findByRole('heading', {
+      name: personalGoal.title,
+    })).toBeInTheDocument()
+
+    expect(screen.queryByRole('heading', {
+      name: studyGoal.title,
+    })).not.toBeInTheDocument()
+
+    expect(screen.queryByRole('heading', {
+      name: projectGoal.title,
+    })).not.toBeInTheDocument()
   })
 
 })
